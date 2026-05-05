@@ -1,20 +1,24 @@
 {
-  description = "BLIP: Byte Length Integer Prefix encoding";
+  description = "mini_blar: constrained subset of the BLAR archive format";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    blip = {
+      url = "github:pmarreck/BLIP/v3.0.0";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, blip, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        pname = "blip";
-        version = "0.2.0";
+        pname = "mini_blar";
+        version = "3.0.0";
         isDarwin = pkgs.stdenv.isDarwin;
 
-        zigDepsHash = "sha256-+eu0L3pehap4NzTz3i8ftauwghIM0dUeKR5QJtBVVVk=";
+        zigDepsHash = "sha256-0000000000000000000000000000000000000000000=";
 
         zigDeps = pkgs.stdenv.mkDerivation {
           pname = "${pname}-zig-deps";
@@ -39,54 +43,41 @@
           '';
           dontFixup = true;
         };
+
+        commonInputs = [ pkgs.zig ]
+          ++ pkgs.lib.optionals isDarwin [
+            pkgs.darwin.cctools
+            pkgs.apple-sdk
+          ];
+
+        zigBuildPhase = optimize: ''
+          export HOME="$TMPDIR"
+          export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+          mkdir -p $ZIG_GLOBAL_CACHE_DIR
+          cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
+          chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+          zig build --prefix $out -Doptimize=${optimize}
+        '';
       in {
         devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [
-            zig
-            hyperfine
-            libjxl
-            zlib
-          ];
-          shellHook = ''
-            export JXL_INCLUDE_PATH="${pkgs.libjxl.dev}/include"
-            export JXL_LIB_PATH="${pkgs.libjxl}/lib"
-          '';
+          buildInputs = with pkgs; [ zig hyperfine ];
         };
 
         packages.default = pkgs.stdenv.mkDerivation {
           inherit pname version;
           src = self;
-          nativeBuildInputs = [ pkgs.zig ]
-            ++ pkgs.lib.optionals isDarwin [
-              pkgs.darwin.cctools
-              pkgs.apple-sdk
-            ];
-          buildInputs = [ pkgs.libjxl pkgs.zlib ];
+          nativeBuildInputs = commonInputs;
           dontConfigure = true;
           dontInstall = true;
           dontFixup = true;
-          buildPhase = ''
-            export HOME="$TMPDIR"
-            export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-            mkdir -p $ZIG_GLOBAL_CACHE_DIR
-            cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
-            chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
-            zig build --prefix $out -Doptimize=ReleaseFast \
-              -Djxl-include-path=${pkgs.libjxl.dev}/include \
-              -Djxl-lib-path=${pkgs.libjxl}/lib
-          '';
+          buildPhase = zigBuildPhase "ReleaseFast";
         };
 
         checks.default = pkgs.stdenv.mkDerivation {
           pname = "${pname}-tests";
           inherit version;
           src = self;
-          nativeBuildInputs = [ pkgs.zig ]
-            ++ pkgs.lib.optionals isDarwin [
-              pkgs.darwin.cctools
-              pkgs.apple-sdk
-            ];
-          buildInputs = [ pkgs.libjxl pkgs.zlib ];
+          nativeBuildInputs = commonInputs;
           dontConfigure = true;
           dontFixup = true;
           buildPhase = ''
@@ -95,10 +86,7 @@
             mkdir -p $ZIG_GLOBAL_CACHE_DIR
             cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
             chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
-            timeout 600 zig build test \
-              -Djxl-include-path=${pkgs.libjxl.dev}/include \
-              -Djxl-lib-path=${pkgs.libjxl}/lib \
-              || { echo "Tests failed"; exit 1; }
+            timeout 600 zig build test || { echo "Tests failed"; exit 1; }
           '';
           installPhase = ''
             mkdir -p $out
