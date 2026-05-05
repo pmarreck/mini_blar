@@ -61,13 +61,13 @@ mini_blar is **a sister project to blar**, not a dependency of it. blar has its 
 - Modify: `.git/config` (remote URL)
 - Create: `pmarreck/mini_blar` on GitHub
 
-- [ ] **Step 1: Create the GitHub repo**
+- [x] **Step 1: Create the GitHub repo** (2026-05-04 EST)
 
 ```bash
 gh repo create pmarreck/mini_blar --public --description "Constrained subset of the BLAR archive format — for embedded/bootstrap use" --no-readme
 ```
 
-- [ ] **Step 2: Set the new remote**
+- [x] **Step 2: Set the new remote** (2026-05-04 EST)
 
 ```bash
 git remote set-url origin git@github.com:pmarreck/mini_blar.git
@@ -75,7 +75,7 @@ git branch -M yolo
 git push -u origin yolo
 ```
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify** (2026-05-04 EST)
 
 ```bash
 git remote -v
@@ -88,7 +88,7 @@ Expected: remote = `pmarreck/mini_blar`, HEAD = the commit you started on (`559d
 
 **Wait condition:** `gh release view v3.0.0 --repo pmarreck/BLIP --json tagName --jq .tagName` returns `v3.0.0`.
 
-- [ ] **Step 1: Verify BLIP `v3.0.0` exists**
+- [x] **Step 1: Verify BLIP `v3.0.0` exists** (2026-05-05 EST)
 
 ```bash
 until gh release view v3.0.0 --repo pmarreck/BLIP --json tagName --jq .tagName 2>/dev/null | grep -q v3.0.0; do
@@ -98,7 +98,7 @@ done
 echo "BLIP v3.0.0 is published. Proceeding."
 ```
 
-- [ ] **Step 2: Add BLIP to `build.zig.zon`**
+- [x] **Step 2: Add BLIP to `build.zig.zon`** (2026-05-05 EST)
 
 In `build.zig.zon`, add a `blip` entry to `.dependencies`:
 ```zig
@@ -112,7 +112,7 @@ In `build.zig.zon`, add a `blip` entry to `.dependencies`:
 
 (mini_blar likely has no other deps. The original BLIP umbrella's other deps — libmagic, libjxl, libflac, etc. — are codec-related and don't apply.)
 
-- [ ] **Step 3: Add BLIP as a Nix flake input**
+- [x] **Step 3: Add BLIP as a Nix flake input** (2026-05-05 EST)
 
 In `flake.nix`:
 ```nix
@@ -120,7 +120,7 @@ inputs.blip.url = "github:pmarreck/BLIP/v3.0.0";
 inputs.blip.inputs.nixpkgs.follows = "nixpkgs";
 ```
 
-- [ ] **Step 4: Hash the dep**
+- [x] **Step 4: Hash the dep** (2026-05-05 EST)
 
 ```bash
 nix build 2>&1 | tail -10
@@ -128,7 +128,7 @@ nix build 2>&1 | tail -10
 
 Copy the printed `got: sha256-...` value into `build.zig.zon` and `flake.nix` if needed. (See `fix-zig-deps-hash` skill if it gets fiddly.)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit** (2026-05-05 EST)
 
 ```bash
 git add build.zig.zon flake.nix flake.lock
@@ -147,7 +147,7 @@ git commit -m "chore(split): add BLIP v3.0.0 as external dep"
 
 **Files to DELETE: everything else** (BLIP-side, blar-side, codec-side, GUI, irrelevant tests, irrelevant specs).
 
-- [ ] **Step 1: Delete BLIP-side files**
+- [x] **Step 1: Delete BLIP-side files** (2026-05-05 EST)
 
 ```bash
 git rm src/blip.zig src/blip.h \
@@ -166,7 +166,7 @@ git rm src/blip.zig src/blip.h \
 
 (If `BLIP_SIGIL_REGISTRY.md` doesn't exist yet, ignore — it's created during BLIP's Phase 1.)
 
-- [ ] **Step 2: Delete blar-side files (codecs, archive impl, GUI, archive tests)**
+- [x] **Step 2: Delete blar-side files (codecs, archive impl, GUI, archive tests)** (2026-05-05 EST)
 
 ```bash
 git rm src/blar.c src/streaming.zig src/expansion.zig src/lib.zig \
@@ -183,7 +183,7 @@ git rm -r macos-app
 
 (If any of these paths don't exist, the `git rm` will fail for that path; ignore individual not-found errors and re-list what's left.)
 
-- [ ] **Step 3: Verify what's left**
+- [x] **Step 3: Verify what's left** (2026-05-05 EST)
 
 ```bash
 ls src/
@@ -194,7 +194,7 @@ Expected:
 - `src/`: `mini_blar.zig`, `miniblar.c`, `blar_common.h` (just three files)
 - `tests/`: `miniblar_test.sh` (just one)
 
-- [ ] **Step 4: Audit for unexpected files at top level**
+- [x] **Step 4: Audit for unexpected files at top level** (2026-05-05 EST)
 
 ```bash
 ls
@@ -202,7 +202,7 @@ ls
 
 Drop any unexpected directories or files (e.g., leftover `inbox/`, `bench/`, etc.) that are BLIP-umbrella artifacts not relevant to mini_blar. Keep: `flake.nix`, `flake.lock`, `build.zig`, `build.zig.zon`, `./build`, `./test`, `LICENSE`, `README.md`, `CLAUDE.md`, `PLAN.md` (this file), `PROJECT_OVERVIEW.md`, `CODE_MINIMAP.md`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit** (2026-05-05 EST)
 
 ```bash
 git add -A
@@ -216,7 +216,7 @@ git commit -m "chore(split): mini_blar gets only the constrained-subset impl"
 
 The current `build.zig` defines several targets (libblip, blar, miniblar, blip-bench, etc.). Reduce to one executable.
 
-- [ ] **Step 1: Reduce `build.zig` to the miniblar-only shape**
+- [x] **Step 1: Reduce `build.zig` to the miniblar-only shape** (2026-05-05 EST)
 
 Replace the contents with (sketch):
 ```zig
@@ -261,7 +261,7 @@ pub fn build(b: *std.Build) void {
 
 (Tweak as needed — the actual existing `build.zig` may have a different structure, but this is the target shape.)
 
-- [ ] **Step 2: Verify the build**
+- [x] **Step 2: Verify the build** (2026-05-05 EST)
 
 ```bash
 nix develop -c zig build -Doptimize=ReleaseFast 2>&1 | tail -3
@@ -270,14 +270,14 @@ ls zig-out/bin/
 
 Expected: `zig-out/bin/miniblar` only.
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests** (2026-05-05 EST)
 
 ```bash
 nix develop -c zig build test 2>&1 | grep -E "tests passed|failed"
 bash tests/miniblar_test.sh 2>&1 | tail -5
 ```
 
-- [ ] **Step 4: Fix any failures**
+- [x] **Step 4: Fix any failures** (2026-05-05 EST)
 
 Common likely failures:
 - **Missing imports of `blip` module** in `src/mini_blar.zig` → change `@import("blip.zig")` to `@import("blip")`.
@@ -285,7 +285,7 @@ Common likely failures:
 - **C side missing `blip.h`** in `miniblar.c` → make sure `addIncludePath(blip_dep.path("src"))` is in the build.zig.
 - **Test fixtures** → if `miniblar_test.sh` references sample files, make sure they're still present.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit** (2026-05-05 EST)
 
 ```bash
 git add -A
@@ -296,7 +296,7 @@ git commit -m "chore(split): trim build.zig to single miniblar binary"
 
 The original BLIP umbrella has a `./test` script that runs many test suites. mini_blar only needs `tests/miniblar_test.sh`.
 
-- [ ] **Step 1: Trim `./test`**
+- [x] **Step 1: Trim `./test`** (2026-05-05 EST)
 
 Reduce the master `./test` to just:
 ```bash
@@ -328,7 +328,7 @@ echo "TOTAL: $TOTAL_FAIL failed"
 exit $TOTAL_FAIL
 ```
 
-- [ ] **Step 2: Trim `./build`**
+- [x] **Step 2: Trim `./build`** (2026-05-05 EST)
 
 Reduce to:
 ```bash
@@ -348,7 +348,7 @@ else
 fi
 ```
 
-- [ ] **Step 3: Remove `./bm` if present**
+- [x] **Step 3: Remove `./bm` if present** (2026-05-05 EST)
 
 mini_blar likely has no benchmarks of its own (it's a constrained subset). Remove `./bm` and `bench/` if present.
 
@@ -357,7 +357,7 @@ git rm -f bm
 git rm -rf bench 2>/dev/null || true
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit** (2026-05-05 EST)
 
 ```bash
 git add -A
@@ -366,7 +366,7 @@ git commit -m "chore(split): trim test/build/bm scripts to mini_blar scope"
 
 ### Task 3.6: Update top-level docs
 
-- [ ] **Step 1: README.md**
+- [x] **Step 1: README.md** (2026-05-05 EST)
 
 Replace with:
 ```markdown
@@ -401,19 +401,19 @@ If you need any of those, use blar.
 ```
 ```
 
-- [ ] **Step 2: PROJECT_OVERVIEW.md**
+- [x] **Step 2: PROJECT_OVERVIEW.md** (2026-05-05 EST)
 
 Brief description of mini_blar's design and constraints. Cross-ref blar and BLIP.
 
-- [ ] **Step 3: CLAUDE.md**
+- [x] **Step 3: CLAUDE.md** (2026-05-05 EST)
 
 Trim to mini_blar-only context. Drop varint/codec/etc. discussion.
 
-- [ ] **Step 4: CODE_MINIMAP.md**
+- [x] **Step 4: CODE_MINIMAP.md** (2026-05-05 EST)
 
 Document the three source files: `mini_blar.zig`, `miniblar.c`, `blar_common.h`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit** (2026-05-05 EST)
 
 ```bash
 git add README.md PROJECT_OVERVIEW.md CLAUDE.md CODE_MINIMAP.md
@@ -422,7 +422,7 @@ git commit -m "docs(split): mini_blar top-level docs"
 
 ### Task 3.7: Push and tag
 
-- [ ] **Step 1: Push**
+- [x] **Step 1: Push** (2026-05-05 EST)
 
 ```bash
 git push origin yolo
@@ -432,7 +432,7 @@ curl -s "https://garnix.io/api/badges/pmarreck/mini_blar?branch=yolo" | head -1
 
 Expected: green build status.
 
-- [ ] **Step 2: Tag**
+- [x] **Step 2: Tag** (2026-05-05 EST)
 
 ```bash
 git tag v3.0.0

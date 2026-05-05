@@ -1,7 +1,7 @@
 # Code Minimap — mini_blar
 
-mini_blar's source is intentionally tiny: one Zig module, one C CLI, and a
-shared C header for cross-cutting helpers.
+mini_blar's source is intentionally tiny: one Zig core, one C-FFI surface,
+one C CLI, and a shared C header for cross-cutting helpers.
 
 ## src/mini_blar.zig
 
@@ -13,44 +13,72 @@ archive.
 - `DirEntry` — struct: path, xh64, metadata
 - `ArchiveEntry` — union(enum) { file, dir }
 - `createArchive(alloc, files) ![]u8` — flat FILE-only archive
-- `createFullArchive(alloc, entries) ![]u8` — archive with FILE + DIR entries
+- `createFullArchive(alloc, entries, ...) ![]u8` — archive with FILE + DIR entries
 - `computeMerkleHash(child_hashes) [8]u8` — xxHash64 of concatenated child hashes
-- `ArchiveReader` — zero-copy reader: init, verifyMagic, fileCount, fileAt,
-  findFile, entryCount, entryAt, entryTypeAt, verifyHash
+- `ArchiveReader` — zero-copy reader. Methods include:
+  - `init` / `verifyMagic` / `verifyChecksum`
+  - `entryCount` / `fileCount`
+  - `entryTypeAt` / `entryPathAt` / `fileContentAt`
+  - `findFile` / `verifyFileAt` / `verifyMerkleAt`
+  - `entryMetadataAt` (returns flat `EntryMetadata` for the C FFI)
+
+## src/c_api.zig
+
+C FFI surface (`libmini_blar.a`). Re-exports archive operations as
+`blar_archive_*` extern functions plus error-code/flag constants and the
+`blar_archive_entry` / `blar_xattr_entry` ABI structs.
+
+- `blar_archive_create_full` / `blar_archive_file_count` / `blar_archive_entry_count`
+- `blar_archive_file_path` / `blar_archive_file_content` / `blar_archive_file_content_by_path`
+- `blar_archive_file_verify` / `blar_archive_verify`
+- `blar_archive_entry_type` / `blar_archive_entry_metadata`
+- `blar_free` / `blar_free_content`
+- `blar_error_string`
+
+## src/blar.h
+
+C header for the FFI — the public API surface for any C consumer.
+
+## src/compression_stub.zig
+
+No-op compression module — satisfies the type-system reference in
+`mini_blar.zig` without pulling in heavy compression deps. mini_blar's
+profile pins `enable_compression=false`, so the stub's
+`UnsupportedCompression` / `OutOfMemory` / `CompressionFailed` error set is
+never actually raised at runtime.
 
 ## src/miniblar.c
 
-C CLI. Calls through the BLIP C FFI for all archive work. Constrained to the
-mini_blar profile — rejects compression/encryption/expansion attributes if it
-encounters them in input.
-
-Commands: `create` / `list` / `extract` / `verify` / `info` / `cat`. Tar-style
-shorthand also supported: `cf` / `tf` / `xf` / `Vf` / `If` / `pf`.
+Minimal C CLI — calls through `blar.h` for all archive work.
+Commands: `create` / `list` / `extract` / `verify` / `info` / `cat`.
+Tar-style shorthand also supported: `cf` / `tf` / `xf` / `Vf` / `If` / `pf`
+(with or without leading hyphen). `-o` flag accepted in any position;
+`.mblar` extension auto-appended; directory inputs explicitly rejected
+(use blar for directory support).
 
 ## src/blar_common.h
 
-Shared C utilities for filesystem and CLI work — kept as a header to remain
-trivially embeddable into the C CLI.
-
-- `read_file`, `write_file` — file I/O helpers
-- `mkdirp`, `ensure_parent_dir` — recursive directory creation
-- `progress_t`, `progress_init/update/finish` — interactive progress bar
-- `parse_tar_flags` — tar-style flag parsing (`cf`/`tf`/`xf`/`Vf`/`If`/`pf`)
-- `default_output_name` — generate default `<basename>.blar` output path
-- `normalize_path` — strip leading `./` and `/` from paths
+Shared C utilities — file I/O (`read_file`/`write_file`), `mkdirp`,
+`ensure_parent_dir`, POSIX metadata helpers (`fill_entry_metadata`,
+`get_mtime_ns`, `get_birthtime_ns`, `get_owner_name`, `get_group_name`),
+extended-attribute reader (`read_file_xattrs`/`free_file_xattrs`),
+tar-style flag parsing (`parse_tar_flags`), default output name
+(`default_output_name`), and `normalize_path_inplace`. Header-only so it
+embeds trivially into the C CLI.
 
 ## tests/miniblar_test.sh
 
-Integration tests for the miniblar CLI. Covers flat archives, binary
-roundtrips, metadata fidelity, hash verification, and rejection of
-out-of-profile input.
+Integration tests for the miniblar CLI. 25 checks covering flat
+archives, binary roundtrips, tar-style flags, `-o` positioning, extension
+auto-append, directory rejection, corruption detection, and `cat` with
+normalized paths.
 
 ## External dependency: BLIP
 
 mini_blar consumes [BLIP](https://github.com/pmarreck/BLIP) via
-`build.zig.zon`. The relevant BLIP-provided symbols mini_blar uses:
+`build.zig.zon` (tag `v3.0.0`) and as a Nix flake input. The BLIP-provided
+symbols mini_blar uses:
 
-- `blip_encode` / `blip_decode` / `blip_xxhash64` (C FFI)
-- `blip.container_mod` — the LP envelope mechanic
-- `blip.array_mod` / `blip.dict_mod` — generic ARRAY/DICT containers
-- `blip.leaf` — UTF8/DATA leaf containers
+- The `blip` Zig module: `container_mod` / `array_mod` / `dict_mod` /
+  `leaf_mod` / `container_types`
+- `libblip.a` for the BLIP-side C symbols the CLI links against
