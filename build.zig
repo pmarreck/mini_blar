@@ -29,10 +29,12 @@ pub fn build(b: *std.Build) void {
     mini_blar_module.addOptions("build_options", build_options);
 
     // C FFI surface (libmini_blar.a) — re-exports `blar_archive_*` for the C CLI.
+    // link_libc is required on Linux because c_api.zig uses std.heap.c_allocator.
     const ffi_module = b.createModule(.{
         .root_source_file = b.path("src/c_api.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
         .imports = &.{
             .{ .name = "blip", .module = blip_dep.module("blip") },
             .{ .name = "mini_blar", .module = mini_blar_module },
