@@ -13,6 +13,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // build_options — mini_blar's profile pins enable_compression=false.
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "enable_compression", false);
+
     // mini_blar Zig module — depends on BLIP's `blip` module
     const mini_blar_module = b.createModule(.{
         .root_source_file = b.path("src/mini_blar.zig"),
@@ -22,24 +26,45 @@ pub fn build(b: *std.Build) void {
             .{ .name = "blip", .module = blip_dep.module("blip") },
         },
     });
+    mini_blar_module.addOptions("build_options", build_options);
 
-    // miniblar C CLI — links against BLIP's static lib + Zig core
-    const miniblar = b.addExecutable(.{
-        .name = "miniblar",
-        .root_module = mini_blar_module,
+    // C FFI surface (libmini_blar.a) — re-exports `blar_archive_*` for the C CLI.
+    const ffi_module = b.createModule(.{
+        .root_source_file = b.path("src/c_api.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "blip", .module = blip_dep.module("blip") },
+            .{ .name = "mini_blar", .module = mini_blar_module },
+        },
     });
-    miniblar.linkLibrary(blip_dep.artifact("blip"));
-    miniblar.addIncludePath(blip_dep.path("src"));
-    miniblar.addCSourceFile(.{
+    ffi_module.addOptions("build_options", build_options);
+    const static_lib = b.addLibrary(.{
+        .name = "mini_blar",
+        .linkage = .static,
+        .root_module = ffi_module,
+    });
+    b.installArtifact(static_lib);
+
+    // miniblar C CLI — its own pure-C module that links libmini_blar + libblip.
+    const cli_module = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    cli_module.addCSourceFile(.{
         .file = b.path("src/miniblar.c"),
         .flags = &.{ "-std=c11", "-D_GNU_SOURCE" },
     });
-    miniblar.linkLibC();
+    cli_module.addIncludePath(b.path("src"));
+    cli_module.addIncludePath(blip_dep.path("src"));
 
-    if (comptime @import("builtin").mode == .Debug) {
-        // Announce debug builds early in main()
-    }
-
+    const miniblar = b.addExecutable(.{
+        .name = "miniblar",
+        .root_module = cli_module,
+    });
+    miniblar.linkLibrary(static_lib);
+    miniblar.linkLibrary(blip_dep.artifact("blip"));
     b.installArtifact(miniblar);
 
     // ── Tests ────────────────────────────────────────────────────────────

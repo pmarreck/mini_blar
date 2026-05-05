@@ -1,16 +1,15 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-pub const container_mod = @import("container.zig");
+pub const container_mod = @import("blip").container_mod;
 const container = container_mod;
-const ct = @import("container_types.zig");
-pub const leaf = @import("leaf.zig");
-pub const array_mod = @import("array.zig");
-pub const dict_mod = @import("dict.zig");
+const ct = @import("blip").container_types;
+pub const leaf = @import("blip").leaf_mod;
+pub const array_mod = @import("blip").array_mod;
+pub const dict_mod = @import("blip").dict_mod;
 const build_options = @import("build_options");
-pub const compression_mod = if (build_options.enable_compression)
-    @import("compression.zig")
-else
-    @import("compression_stub.zig");
+// mini_blar's profile forbids compression — always use the stub.
+// build_options.enable_compression is kept for future variants.
+pub const compression_mod = @import("compression_stub.zig");
 // data_mod removed in v2 — use leaf directly (data.zig merged into leaf.zig)
 const testing = std.testing;
 
@@ -1094,6 +1093,42 @@ pub const ArchiveReader = struct {
         }
         return null;
     }
+
+    /// Extracted metadata for an entry — flat shape suitable for the C FFI.
+    pub const EntryMetadata = struct {
+        mode: u16,
+        mtime_ns: i64,
+        owner: []const u8,
+    };
+
+    /// Best-effort metadata extraction. Works for FILE and DIR entries.
+    /// Missing keys yield zeroed/empty fields. Errors propagate.
+    pub fn entryMetadataAt(self: ArchiveReader, index: u64) ContainerError!EntryMetadata {
+        const entry_type = try self.entryTypeAt(index);
+        const meta_reader = if (entry_type == .file) blk: {
+            const arr = try self.fileArrayAt(index);
+            const meta_view = try arr.elementAt(0);
+            break :blk try dict_mod.DictReader.init(meta_view.buf);
+        } else try self.dirDictAt(index);
+
+        var out: EntryMetadata = .{ .mode = 0, .mtime_ns = 0, .owner = &.{} };
+
+        if (try meta_reader.findKey("mo")) |idx| {
+            const v = try meta_reader.valueAt(idx);
+            const raw = try leaf.readData(v);
+            if (raw.len >= 2) out.mode = std.mem.readInt(u16, raw[0..2], .little);
+        }
+        if (try meta_reader.findKey("mt")) |idx| {
+            const v = try meta_reader.valueAt(idx);
+            const raw = try leaf.readData(v);
+            if (raw.len >= 8) out.mtime_ns = std.mem.readInt(i64, raw[0..8], .little);
+        }
+        if (try meta_reader.findKey("ow")) |idx| {
+            const v = try meta_reader.valueAt(idx);
+            out.owner = leaf.readUtf8(v) catch &.{};
+        }
+        return out;
+    }
 };
 
 // =============================================================================
@@ -1656,7 +1691,7 @@ test "enable_compression flag: archive create/read works regardless of flag" {
 
 test "enable_compression flag: isCompressed works regardless of flag" {
     // isCompressed only parses LP headers — works without compression libs
-    const leaf_mod = @import("leaf.zig");
+    const leaf_mod = @import("blip").leaf_mod;
     const allocator = testing.allocator;
 
     const plain = try leaf_mod.serializeData(allocator, "not compressed");
@@ -1675,7 +1710,7 @@ test "enable_compression flag: build_options reflects correct state" {
         // Compression disabled: stub should return UnsupportedCompression
         try testing.expectError(
             error.UnsupportedCompression,
-            compression_mod.compress(testing.allocator, .lzma2, "test", null, null, 0),
+            compression_mod.compressContainer(testing.allocator, .lzma2, "test", null, null, null, 0),
         );
     }
 }

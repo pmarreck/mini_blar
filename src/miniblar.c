@@ -1,19 +1,20 @@
 /*
- * miniblar -- Minimal BLIP Archive CLI
+ * miniblar — Minimal BLIP archive CLI.
  *
- * Creates flat miniBlar archives (FILE entries only with metadata,
- * no directories, no compression, no encryption).
- * For directory support, compression, and encryption, use blar.
+ * Creates flat (FILE-only) archives in mini_blar's profile of the BLAR
+ * format: TYPE=5/7, xxhash64 only, no compression, no encryption, no
+ * codec expansion. Archives produced are valid input for the full blar
+ * reader.
  *
  * Usage:
  *   miniblar create [-o <archive>] <files...>
  *   miniblar list <archive>
- *   miniblar extract <archive> [-C dir]
+ *   miniblar extract <archive> [-C <dir>]
  *   miniblar verify <archive>
- *   miniblar info [--json] <archive>
+ *   miniblar info <archive>
  *   miniblar cat <archive> <path>
  *
- * Tar-style shorthand (hyphen optional):
+ * Tar-style shorthand:
  *   miniblar cf  <archive> <files...>
  *   miniblar tf  <archive>
  *   miniblar xf  <archive> [-C <dir>]
@@ -22,972 +23,461 @@
  *   miniblar pf  <archive> <path>
  */
 
+#include <fcntl.h>
+#include <getopt.h>
+#include <utime.h>
+#include <sys/time.h>
 #include "blar_common.h"
 
-#include <dirent.h>
-#include <fcntl.h>
-#include <time.h>
-
-/* ── Module-scoped state ──────────────────────────────────────────────── */
-
-static bool g_absolute_names = false;
-
-/* ── Forward declarations ─────────────────────────────────────────────── */
-
-static int cmd_create(int argc, char **argv);
-static int cmd_list(int argc, char **argv);
-static int cmd_extract(int argc, char **argv);
-static int cmd_verify(int argc, char **argv);
-static int cmd_info(int argc, char **argv);
-static int cmd_cat(int argc, char **argv);
-static int cmd_peek(int argc, char **argv);
-static int cmd_poke(int argc, char **argv);
-static int cmd_to_json(int argc, char **argv);
-static int cmd_from_json(int argc, char **argv);
-static void print_usage(FILE *out);
-static void print_version(void);
-
-/* ── Main ─────────────────────────────────────────────────────────────── */
-
-int main(int argc, char **argv) {
-    if (argc < 2) {
-        print_usage(stderr);
-        return EXIT_USAGE;
-    }
-
-    const char *arg1 = argv[1];
-
-    if (strcmp(arg1, "--help") == 0 || strcmp(arg1, "-h") == 0) {
-        print_usage(stdout);
-        return EXIT_OK;
-    }
-
-    if (strcmp(arg1, "--version") == 0) {
-        print_version();
-        return EXIT_OK;
-    }
-
-    if (strcmp(arg1, "create") == 0) return cmd_create(argc - 2, argv + 2);
-    if (strcmp(arg1, "list") == 0)   return cmd_list(argc - 2, argv + 2);
-    if (strcmp(arg1, "extract") == 0) return cmd_extract(argc - 2, argv + 2);
-    if (strcmp(arg1, "verify") == 0) return cmd_verify(argc - 2, argv + 2);
-    if (strcmp(arg1, "info") == 0)   return cmd_info(argc - 2, argv + 2);
-    if (strcmp(arg1, "cat") == 0)    return cmd_cat(argc - 2, argv + 2);
-    if (strcmp(arg1, "peek") == 0)   return cmd_peek(argc - 2, argv + 2);
-    if (strcmp(arg1, "poke") == 0)   return cmd_poke(argc - 2, argv + 2);
-    if (strcmp(arg1, "to-json") == 0) return cmd_to_json(argc - 2, argv + 2);
-    if (strcmp(arg1, "from-json") == 0) return cmd_from_json(argc - 2, argv + 2);
-
-    bool has_f = false;
-    operation_t op = parse_tar_flags(arg1, &has_f);
-    if (op != OP_NONE && has_f) {
-        if (tar_flags_has_P(arg1)) g_absolute_names = true;
-        switch (op) {
-        case OP_CREATE:  return cmd_create(argc - 2, argv + 2);
-        case OP_LIST:    return cmd_list(argc - 2, argv + 2);
-        case OP_EXTRACT: return cmd_extract(argc - 2, argv + 2);
-        case OP_VERIFY:  return cmd_verify(argc - 2, argv + 2);
-        case OP_INFO:    return cmd_info(argc - 2, argv + 2);
-        case OP_CAT:     return cmd_cat(argc - 2, argv + 2);
-        case OP_PEEK:    return cmd_peek(argc - 2, argv + 2);
-        case OP_POKE:    return cmd_poke(argc - 2, argv + 2);
-        case OP_TO_JSON: return cmd_to_json(argc - 2, argv + 2);
-        case OP_FROM_JSON: return cmd_from_json(argc - 2, argv + 2);
-        case OP_NONE:    break;
-        }
-    }
-
-    fprintf(stderr, "miniblar: unknown command '%s'\n", arg1);
-    print_usage(stderr);
-    return EXIT_USAGE;
-}
-
-/* ── Help and version ─────────────────────────────────────────────────── */
+#ifndef MINIBLAR_VERSION
+#define MINIBLAR_VERSION "3.0.0"
+#endif
 
 static void print_usage(FILE *out) {
     fprintf(out,
-        "Usage: miniblar <command> [options] [arguments]\n"
-        "\n"
-        "Minimal BLIP archive tool (flat files with metadata, no directories).\n"
-        "For directory support, use 'blar'.\n"
+        "Usage: miniblar <command> [options] [args]\n"
         "\n"
         "Commands:\n"
-        "  create [-o <archive>] <files...>               Create a BLIP archive\n"
-        "  list <archive>                     List files in archive\n"
-        "  extract <archive> [-C <dir>]       Extract files from archive\n"
-        "  verify <archive>                   Verify archive integrity\n"
-        "  info [--json] <archive>            Show archive information\n"
-        "  cat <archive> <path>               Print file contents to stdout\n"
-        "  peek <archive> [<path>] [flags]    Inspect archive structure\n"
-        "  poke <archive> <path> [options]    Modify a value in archive\n"
-        "  to-json <archive>                 Convert archive to JSON (stdout)\n"
-        "  from-json [-o <archive>] [<json>] Convert JSON to archive\n"
+        "  create  -o <archive> <files...>     Create a new archive\n"
+        "  list    <archive>                   List archive contents\n"
+        "  extract <archive> [-C <dir>]        Extract archive\n"
+        "  verify  <archive>                   Verify all hashes\n"
+        "  info    <archive>                   Show archive stats\n"
+        "  cat     <archive> <path>            Print one file to stdout\n"
         "\n"
-        "Tar-style shorthand (hyphen optional):\n"
-        "  miniblar cf  <archive> <files...>  Create\n"
-        "  miniblar tf  <archive>             List\n"
-        "  miniblar xf  <archive> [-C <dir>]  Extract\n"
-        "  miniblar Vf  <archive>             Verify\n"
-        "  miniblar If  <archive>             Info\n"
-        "  miniblar pf  <archive> <path>      Cat\n"
-        "  miniblar kf  <archive> [<path>]    Peek\n"
-        "  miniblar Kf  <archive> <path>      Poke\n"
-        "  miniblar jf  <archive>             To-JSON\n"
-        "  miniblar Jf  ... -o <archive>      From-JSON\n"
-        "\n"
-        "Tar-style flags:\n"
-        "  P                              Absolute names (preserve leading /)\n"
-        "\n"
-        "Options:\n"
-        "  -j <N>, --threads <N>  Thread count (0=auto, default: 0)\n"
-        "  -f, --force      Overwrite output file without prompting\n"
-        "  --absolute-names Preserve absolute paths in archive\n"
-        "  -h, --help       Show this help\n"
-        "  --version        Show version\n"
+        "Tar-style shorthand: cf, tf, xf, Vf, If, pf\n"
+        "Options: -h/--help  --version  --about  -f/--force  -C <dir>  -o <archive>\n"
     );
 }
 
-static void print_version(void) {
-    printf("miniblar %s\n", BLAR_VERSION);
+static void print_about(void) {
+    printf("miniblar %s — minimal BLIP archive CLI (mini_blar profile)\n",
+           MINIBLAR_VERSION);
 }
 
-/* ── Progress callbacks for FFI operations ────────────────────────────── */
-
-static void create_progress_cb(uint64_t entries_done, uint64_t bytes_done,
-                                void *user_ctx) {
-    progrez_ctx *progress = (progrez_ctx *)user_ctx;
-    if (progress) progrez_update(progress, entries_done, bytes_done);
+/* Append ".mblar" to a path that lacks it. Returns malloc'd string or NULL. */
+static char *ensure_mblar_extension(const char *path) {
+    size_t len = strlen(path);
+    if (len >= 6 && strcmp(path + len - 6, ".mblar") == 0) {
+        char *copy = (char *)malloc(len + 1);
+        if (copy) memcpy(copy, path, len + 1);
+        return copy;
+    }
+    char *out = (char *)malloc(len + 7);
+    if (!out) return NULL;
+    memcpy(out, path, len);
+    memcpy(out + len, ".mblar", 7);
+    return out;
 }
 
-static void write_progress_cb(uint64_t bytes_written, void *user_ctx) {
-    progrez_ctx *progress = (progrez_ctx *)user_ctx;
-    if (progress) progrez_update(progress, 0, bytes_written);
-}
-
-static void phase_cb(const uint8_t *label, size_t label_len, void *user_ctx) {
-    progrez_ctx *progress = (progrez_ctx *)user_ctx;
-    if (!progress) return;
-    char buf[64];
-    size_t n = label_len < sizeof(buf) - 1 ? label_len : sizeof(buf) - 1;
-    memcpy(buf, label, n);
-    buf[n] = '\0';
-    progrez_set_label(progress, buf);
-    progrez_set_indeterminate(progress);
-}
-
-/* ── cmd_create ───────────────────────────────────────────────────────── */
-
-static int cmd_create(int argc, char **argv) {
+/* ── create ──────────────────────────────────────────────────────────── */
+/*
+ * Two call shapes:
+ *   - subcommand:   create [-o <out>] [-f] [files...]      (-o anywhere)
+ *   - tar-style:    cf <archive> [files...]                (archive is argv[0])
+ */
+static int cmd_create_impl(int argc, char **argv, bool tar_style) {
     const char *out_path = NULL;
-    int file_start = 0;
-    bool absolute_names = g_absolute_names;
-    uint8_t num_threads = 0;    /* 0 = auto */
-    bool force = false;        /* -f/--force: overwrite without prompting */
+    bool force = false;
 
-    if (argc < 1) {
-        fprintf(stderr, "miniblar: create: missing arguments\n");
-        return EXIT_USAGE;
+    /* Pre-allocate input slot list so we can scan args in any order */
+    int *input_indices = (int *)calloc((size_t)argc, sizeof(int));
+    if (!input_indices) { fprintf(stderr, "miniblar: create: out of memory\n"); return EXIT_IO; }
+    int input_count = 0;
+
+    int i = 0;
+    if (tar_style) {
+        if (argc < 1) {
+            fprintf(stderr, "miniblar: create: tar-style requires <archive> <files...>\n");
+            free(input_indices); return EXIT_USAGE;
+        }
+        out_path = argv[0];
+        i = 1;
     }
 
-    /* Scan for --absolute-names and -o before positional parsing.
-     * Named options can appear anywhere in the argument list. */
-    for (int i = 0; i < argc; i++) {
-        if (strcmp(argv[i], "--absolute-names") == 0) {
-            absolute_names = true;
-            for (int j = i; j < argc - 1; j++) argv[j] = argv[j + 1];
-            argc--;
-            i--;
-        } else if (strcmp(argv[i], "-z") == 0) {
-            fprintf(stderr, "miniblar: create: compression not supported (use blar for compression)\n");
-            return EXIT_USAGE;
-        } else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--force") == 0) {
+    while (i < argc) {
+        const char *a = argv[i];
+        if (!tar_style && (strcmp(a, "-o") == 0) && i + 1 < argc) {
+            out_path = argv[++i];
+        } else if (strcmp(a, "-f") == 0 || strcmp(a, "--force") == 0) {
             force = true;
-            for (int j = i; j < argc - 1; j++) argv[j] = argv[j + 1];
-            argc--;
-            i--;
-        } else if (strcmp(argv[i], "--solid") == 0) {
-            fprintf(stderr, "miniblar: create: compression not supported (use blar for compression)\n");
-            return EXIT_USAGE;
-        } else if (strcmp(argv[i], "-j") == 0 || strcmp(argv[i], "--threads") == 0) {
-            if (i + 1 >= argc) {
-                fprintf(stderr, "miniblar: create: %s requires an argument\n", argv[i]);
-                return EXIT_USAGE;
-            }
-            int t = atoi(argv[i+1]);
-            if (t < 0 || t > 255) {
-                fprintf(stderr, "miniblar: create: thread count must be 0-255\n");
-                return EXIT_USAGE;
-            }
-            num_threads = (uint8_t)t;
-            for (int j = i; j < argc - 2; j++) argv[j] = argv[j + 2];
-            argc -= 2;
-            i--;
-        } else if (strcmp(argv[i], "-o") == 0) {
-            if (i + 1 >= argc) {
-                fprintf(stderr, "miniblar: create: -o requires an argument\n");
-                return EXIT_USAGE;
-            }
-            out_path = argv[i + 1];
-            /* Remove -o and its argument from argv */
-            for (int j = i; j < argc - 2; j++) argv[j] = argv[j + 2];
-            argc -= 2;
-            i--;
+        } else {
+            input_indices[input_count++] = i;
         }
+        i++;
     }
 
-    /* If no -o was given, check if first arg is a non-existent path
-     * (tar-style: cf <archive> <files...>). Otherwise all args are inputs. */
-    file_start = 0;
-    if (!out_path && argc >= 1) {
-        struct stat st_check;
-        if (stat(argv[0], &st_check) != 0) {
-            /* First arg doesn't exist — treat as output path (tar-style) */
-            out_path = argv[0];
-            file_start = 1;
-        }
+    if (input_count < 1) {
+        fprintf(stderr, "miniblar: create: no input files given\n");
+        free(input_indices); return EXIT_USAGE;
     }
-    int file_count = argc - file_start;
-
-    if (file_count <= 0) {
-        fprintf(stderr, "miniblar: create: no input files specified\n");
-        return EXIT_USAGE;
-    }
-
-    /* Reject directory arguments */
-    for (int i = 0; i < file_count; i++) {
-        struct stat st;
-        if (stat(argv[file_start + i], &st) == 0 && S_ISDIR(st.st_mode)) {
-            fprintf(stderr, "miniblar: create: '%s' is a directory "
-                    "(use blar for directory support)\n", argv[file_start + i]);
-            return EXIT_USAGE;
-        }
-    }
-
-    /* If no -o was given, generate default name for single input.
-     * Multiple inputs without -o is an error. */
-    char default_out[4096];
+    /* Subcommand mode: -o is required for multi-file archives.
+     * Single-file archives auto-derive the output name from the input. */
+    char *out_alloc = NULL;
     if (!out_path) {
-        if (file_count > 1) {
-            fprintf(stderr, "miniblar: create: multiple inputs require -o <archive>\n");
-            return EXIT_USAGE;
+        if (input_count > 1) {
+            fprintf(stderr, "miniblar: create: -o <archive> required for multi-file archives\n");
+            free(input_indices); return EXIT_USAGE;
         }
-        if (!default_output_name(argv[0], ".mblar", default_out, sizeof(default_out))) {
-            fprintf(stderr, "miniblar: create: cannot generate output name\n");
-            return EXIT_USAGE;
-        }
-        out_path = default_out;
+        out_alloc = default_output_name(argv[input_indices[0]]);
+        out_path = out_alloc;
+    } else {
+        /* Append .mblar if missing */
+        out_alloc = ensure_mblar_extension(out_path);
+        out_path = out_alloc;
     }
-
-    /* Append .mblar extension if the output path has no extension */
-    {
-        const char *base = strrchr(out_path, '/');
-        base = base ? base + 1 : out_path;
-        if (!strchr(base, '.')) {
-            size_t olen = strlen(out_path);
-            if (olen + 6 + 1 > sizeof(default_out)) {
-                fprintf(stderr, "miniblar: create: output path too long\n");
-                return EXIT_USAGE;
-            }
-            if (out_path != default_out) {
-                memcpy(default_out, out_path, olen);
-            }
-            memcpy(default_out + olen, ".mblar", 6);
-            default_out[olen + 6] = '\0';
-            out_path = default_out;
-        }
-    }
-
-    /* Check for existing output file — prompt before overwriting */
-    if (!force) {
-        struct stat out_st;
-        if (stat(out_path, &out_st) == 0) {
-            if (isatty(STDIN_FILENO)) {
-                fprintf(stderr, "miniblar: '%s' already exists. Overwrite? (y/N) ", out_path);
-                int ch = getchar();
-                if (ch != 'y' && ch != 'Y') {
-                    fprintf(stderr, "miniblar: not overwriting\n");
-                    return EXIT_USAGE;
-                }
-                while (ch != '\n' && ch != EOF) ch = getchar();
-            } else {
-                fprintf(stderr, "miniblar: '%s' already exists (use -f to overwrite)\n", out_path);
-                return EXIT_USAGE;
-            }
-        }
-    }
-
-    /* Read all input files and collect metadata. */
-    blip_archive_entry *entries = calloc((size_t)file_count, sizeof(blip_archive_entry));
-    if (!entries) {
+    if (!out_path) {
+        free(input_indices);
         fprintf(stderr, "miniblar: create: out of memory\n");
         return EXIT_IO;
     }
 
-    uint64_t bytes_done = 0;
-
-    /* Progress: indeterminate scanning phase */
-    progrez_ctx *progress = progrez_create("Scanning");
-    if (progress) {
-        progrez_set_identity(progress, "miniblar", "archive creation");
-        progrez_set_sparkline(progress, true);
-        progrez_set_indeterminate(progress);
-    }
-
-    for (int i = 0; i < file_count; i++) {
-        const char *path = argv[file_start + i];
-        size_t content_len = 0;
-        uint8_t *content = read_file(path, &content_len);
-        if (!content) {
-            if (progress) { progrez_finish(progress); progrez_destroy(progress); }
-            fprintf(stderr, "miniblar: create: cannot open '%s': %s\n",
-                    path, strerror(errno));
-            for (int j = 0; j < i; j++) {
-                free((void *)entries[j].content);
-                free_file_xattrs((blip_xattr_entry *)entries[j].xattrs, entries[j].xattr_count,
-                                  (uint8_t *)entries[j].resource_fork);
-            }
-            free(entries);
-            return EXIT_IO;
-        }
-
-        memset(&entries[i], 0, sizeof(entries[i]));
-        entries[i].path = path;
-        entries[i].path_len = strlen(path);
-        entries[i].content = content;
-        entries[i].content_len = content_len;
-        entries[i].is_dir = 0;
-
-        /* Collect file metadata */
+    if (!force) {
         struct stat st;
-        if (stat(path, &st) == 0) {
-            fill_entry_metadata(&entries[i], &st);
+        if (stat(out_path, &st) == 0) {
+            fprintf(stderr, "miniblar: '%s' already exists (use -f to overwrite)\n", out_path);
+            free(out_alloc); free(input_indices);
+            return EXIT_USAGE;
+        }
+    }
+
+    blar_archive_entry *entries = (blar_archive_entry *)calloc((size_t)input_count, sizeof(*entries));
+    if (!entries) { free(out_alloc); free(input_indices); return EXIT_IO; }
+
+    for (int j = 0; j < input_count; j++) {
+        const char *raw_path = argv[input_indices[j]];
+        const char *stored_path = normalize_path_inplace(raw_path);
+
+        /* Reject directories explicitly — mini_blar's CLI handles flat archives. */
+        struct stat st_chk;
+        if (stat(raw_path, &st_chk) == 0 && S_ISDIR(st_chk.st_mode)) {
+            fprintf(stderr, "miniblar: create: directory arguments not supported (use blar): '%s'\n", raw_path);
+            for (int k = 0; k < j; k++) {
+                free((void *)entries[k].content);
+                free_file_xattrs((blar_xattr_entry *)entries[k].xattrs,
+                                  entries[k].xattr_count,
+                                  (uint8_t *)entries[k].resource_fork);
+            }
+            free(entries); free(out_alloc); free(input_indices);
+            return EXIT_USAGE;
         }
 
-        /* Read xattrs and resource fork */
-        blip_xattr_entry *xa = NULL;
-        size_t xa_count = 0;
-        uint8_t *rfork = NULL;
-        size_t rfork_len = 0;
-        read_file_xattrs(path, &xa, &xa_count, &rfork, &rfork_len);
-        entries[i].xattrs = xa;
-        entries[i].xattr_count = xa_count;
-        entries[i].resource_fork = rfork;
-        entries[i].resource_fork_len = rfork_len;
+        size_t content_len = 0;
+        uint8_t *content = read_file(raw_path, &content_len);
+        if (!content) {
+            fprintf(stderr, "miniblar: create: cannot read '%s': %s\n", raw_path, strerror(errno));
+            for (int k = 0; k < j; k++) {
+                free((void *)entries[k].content);
+                free_file_xattrs((blar_xattr_entry *)entries[k].xattrs,
+                                  entries[k].xattr_count,
+                                  (uint8_t *)entries[k].resource_fork);
+            }
+            free(entries); free(out_alloc); free(input_indices);
+            return EXIT_IO;
+        }
 
-        bytes_done += content_len;
-        if (progress) progrez_update(progress, (uint64_t)(i + 1), bytes_done);
+        memset(&entries[j], 0, sizeof(entries[j]));
+        entries[j].path = (const uint8_t *)stored_path;
+        entries[j].path_len = strlen(stored_path);
+        entries[j].content = content;
+        entries[j].content_len = content_len;
+        entries[j].is_dir = 0;
+
+        struct stat st;
+        if (stat(raw_path, &st) == 0) fill_entry_metadata(&entries[j], &st);
+
+        blar_xattr_entry *xa = NULL; size_t xa_count = 0;
+        uint8_t *rfork = NULL; size_t rfork_len = 0;
+        read_file_xattrs(raw_path, &xa, &xa_count, &rfork, &rfork_len);
+        entries[j].xattrs = xa;
+        entries[j].xattr_count = xa_count;
+        entries[j].resource_fork = rfork;
+        entries[j].resource_fork_len = rfork_len;
     }
 
-    /* Progress: switch to determinate "Creating" phase.
-     * The FFI now calls back per-entry so we get real progress.
-     * Reset counters since scanning left them at final values. */
-    if (progress) {
-        progrez_set_label(progress, "Creating");
-        progrez_set_determinate(progress, (uint64_t)file_count, bytes_done);
-        progrez_update(progress, 0, 0);
+    uint8_t *archive = NULL; size_t archive_len = 0;
+    int32_t rc = blar_archive_create_full(
+        entries, (size_t)input_count, 0, 0, 0,
+        NULL, NULL, NULL, &archive, &archive_len);
+
+    for (int j = 0; j < input_count; j++) {
+        free((void *)entries[j].content);
+        free_file_xattrs((blar_xattr_entry *)entries[j].xattrs, entries[j].xattr_count,
+                         (uint8_t *)entries[j].resource_fork);
     }
+    free(entries); free(input_indices);
 
-    uint8_t *archive_buf = NULL;
-    size_t archive_len = 0;
-    uint32_t create_flags = absolute_names ? BLIP_ARCHIVE_ABSOLUTE_PATHS : 0;
-    int32_t rc = blip_archive_create_full(entries, (size_t)file_count, create_flags,
-                                           0 /* no compression */, num_threads,
-                                           progress ? create_progress_cb : NULL,
-                                           progress ? phase_cb : NULL,
-                                           progress,
-                                           &archive_buf, &archive_len);
-
-    for (int i = 0; i < file_count; i++) {
-        free((void *)entries[i].content);
-        free_file_xattrs((blip_xattr_entry *)entries[i].xattrs, entries[i].xattr_count,
-                          (uint8_t *)entries[i].resource_fork);
-    }
-    free(entries);
-
-    if (rc != BLIP_OK) {
-        if (progress) { progrez_finish(progress); progrez_destroy(progress); }
-        fprintf(stderr, "miniblar: create: %s\n", blip_error_string(rc));
+    if (rc != BLAR_OK) {
+        fprintf(stderr, "miniblar: create: %s\n", blar_error_string(rc));
+        free(out_alloc);
         return EXIT_IO;
     }
 
-    if (progress) {
-        progrez_set_label(progress, "Writing");
-        progrez_set_determinate(progress, 0, archive_len);
-        progrez_update(progress, 0, 0);
-    }
-
-    if (!(progress ? write_file_progress(out_path, archive_buf, archive_len, write_progress_cb, progress)
-                   : write_file(out_path, archive_buf, archive_len))) {
-        if (progress) { progrez_finish(progress); progrez_destroy(progress); }
-        fprintf(stderr, "miniblar: create: cannot write '%s': %s\n",
-                out_path, strerror(errno));
-        blip_free(archive_buf, archive_len);
+    bool ok = write_file(out_path, archive, archive_len);
+    blar_free(archive, archive_len);
+    if (!ok) {
+        fprintf(stderr, "miniblar: create: cannot write '%s': %s\n", out_path, strerror(errno));
+        free(out_alloc);
         return EXIT_IO;
     }
-
-    if (progress) { progrez_finish(progress); progrez_destroy(progress); }
-    char size_buf[32];
-    if (bytes_done > 0 && archive_len < bytes_done) {
-        char orig_buf[32];
-        double pct = (double)archive_len / (double)bytes_done * 100.0;
-        fprintf(stderr, "Created %s (%s -> %s, %.2f%% of original)\n", out_path,
-                format_size(bytes_done, orig_buf, sizeof(orig_buf)),
-                format_size(archive_len, size_buf, sizeof(size_buf)), pct);
-    } else {
-        fprintf(stderr, "Created %s (%s)\n", out_path,
-                format_size(archive_len, size_buf, sizeof(size_buf)));
-    }
-    blip_free(archive_buf, archive_len);
+    free(out_alloc);
     return EXIT_OK;
 }
 
-/* ── cmd_list ─────────────────────────────────────────────────────────── */
+static int cmd_create(int argc, char **argv) { return cmd_create_impl(argc, argv, false); }
+static int cmd_create_tar(int argc, char **argv) { return cmd_create_impl(argc, argv, true); }
 
+/* ── list ────────────────────────────────────────────────────────────── */
 static int cmd_list(int argc, char **argv) {
-    if (argc < 1) {
-        fprintf(stderr, "miniblar: list: missing archive path\n");
-        return EXIT_USAGE;
-    }
-
-    const char *archive_path = argv[0];
+    if (argc < 1) { fprintf(stderr, "miniblar: list: archive required\n"); return EXIT_USAGE; }
     size_t buf_len = 0;
-    uint8_t *buf = read_archive_plain(archive_path, &buf_len);
-    if (!buf) {
-        fprintf(stderr, "miniblar: list: cannot open '%s': %s\n",
-                archive_path, strerror(errno));
-        return EXIT_IO;
-    }
+    uint8_t *buf = read_file(argv[0], &buf_len);
+    if (!buf) { fprintf(stderr, "miniblar: list: cannot read '%s'\n", argv[0]); return EXIT_IO; }
 
     uint64_t count = 0;
-    int32_t rc = blip_archive_file_count(buf, buf_len, &count);
-    if (rc != BLIP_OK) {
-        fprintf(stderr, "miniblar: list: %s\n", blip_error_string(rc));
-        free(buf);
-        return EXIT_IO;
+    int32_t rc = blar_archive_entry_count(buf, buf_len, &count);
+    if (rc != BLAR_OK) {
+        fprintf(stderr, "miniblar: list: %s\n", blar_error_string(rc));
+        free(buf); return EXIT_DATA;
     }
-
-    for (uint64_t i = 0; i < count; i++) {
-        const char *path = NULL;
-        size_t path_len = 0;
-        rc = blip_archive_file_path(buf, buf_len, i, &path, &path_len);
-        if (rc != BLIP_OK) {
-            fprintf(stderr, "miniblar: list: file %llu: %s\n",
-                    (unsigned long long)i, blip_error_string(rc));
-            free(buf);
-            return EXIT_IO;
-        }
-        fwrite(path, 1, path_len, stdout);
-        fputc('\n', stdout);
+    for (uint64_t j = 0; j < count; j++) {
+        const uint8_t *path = NULL; size_t path_len = 0;
+        if (blar_archive_file_path(buf, buf_len, j, &path, &path_len) != BLAR_OK) continue;
+        uint8_t type = 0;
+        blar_archive_entry_type(buf, buf_len, j, &type);
+        char prefix = (type == BLAR_TYPE_DIR) ? 'd' : '-';
+        printf("%c %.*s\n", prefix, (int)path_len, (const char *)path);
     }
-
     free(buf);
     return EXIT_OK;
 }
 
-/* ── cmd_extract ──────────────────────────────────────────────────────── */
-
+/* ── extract ─────────────────────────────────────────────────────────── */
 static int cmd_extract(int argc, char **argv) {
-    if (argc < 1) {
-        fprintf(stderr, "miniblar: extract: missing archive path\n");
-        return EXIT_USAGE;
-    }
-
-    const char *archive_path = argv[0];
-    const char *output_dir = NULL;
-    bool force = false;
-
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-C") == 0) {
-            if (i + 1 >= argc) {
-                fprintf(stderr, "miniblar: extract: -C requires an argument\n");
-                return EXIT_USAGE;
-            }
-            output_dir = argv[i + 1];
-            i++;
-        } else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--force") == 0) {
-            force = true;
+    const char *archive = NULL;
+    const char *outdir = ".";
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "-C") == 0 && i + 1 < argc) {
+            outdir = argv[++i];
+        } else if (!archive) {
+            archive = argv[i];
         }
     }
-
-    /* Check if output directory already has files — warn unless --force */
-    if (!force && output_dir) {
-        struct stat out_st;
-        if (stat(output_dir, &out_st) == 0 && S_ISDIR(out_st.st_mode)) {
-            DIR *d = opendir(output_dir);
-            if (d) {
-                struct dirent *de;
-                bool has_files = false;
-                while ((de = readdir(d)) != NULL) {
-                    if (de->d_name[0] == '.' && (de->d_name[1] == '\0' ||
-                        (de->d_name[1] == '.' && de->d_name[2] == '\0')))
-                        continue;
-                    has_files = true;
-                    break;
-                }
-                closedir(d);
-                if (has_files) {
-                    if (isatty(STDIN_FILENO)) {
-                        fprintf(stderr, "miniblar: extract: '%s' is non-empty. "
-                                "Overwrite existing files? (y/N) ", output_dir);
-                        int ch = getchar();
-                        if (ch != 'y' && ch != 'Y') {
-                            fprintf(stderr, "miniblar: extract: aborted\n");
-                            return EXIT_USAGE;
-                        }
-                        while (ch != '\n' && ch != EOF) ch = getchar();
-                    } else {
-                        fprintf(stderr, "miniblar: extract: '%s' is non-empty "
-                                "(use -f to overwrite)\n", output_dir);
-                        return EXIT_USAGE;
-                    }
-                }
-            }
-        }
-    }
+    if (!archive) { fprintf(stderr, "miniblar: extract: archive required\n"); return EXIT_USAGE; }
 
     size_t buf_len = 0;
-    uint8_t *buf = read_archive_plain(archive_path, &buf_len);
-    if (!buf) {
-        fprintf(stderr, "miniblar: extract: cannot open '%s': %s\n",
-                archive_path, strerror(errno));
-        return EXIT_IO;
+    uint8_t *buf = read_file(archive, &buf_len);
+    if (!buf) { fprintf(stderr, "miniblar: extract: cannot read '%s'\n", archive); return EXIT_IO; }
+
+    if (mkdirp(outdir, 0755) != 0) {
+        fprintf(stderr, "miniblar: extract: cannot create '%s': %s\n", outdir, strerror(errno));
+        free(buf); return EXIT_IO;
     }
 
     uint64_t count = 0;
-    int32_t rc = blip_archive_file_count(buf, buf_len, &count);
-    if (rc != BLIP_OK) {
-        fprintf(stderr, "miniblar: extract: %s\n", blip_error_string(rc));
-        free(buf);
-        return EXIT_IO;
+    if (blar_archive_entry_count(buf, buf_len, &count) != BLAR_OK) {
+        fprintf(stderr, "miniblar: extract: invalid archive\n");
+        free(buf); return EXIT_DATA;
     }
 
-    uint64_t total_bytes = 0;
-    uint64_t bytes_done = 0;
+    for (uint64_t j = 0; j < count; j++) {
+        const uint8_t *path = NULL; size_t path_len = 0;
+        if (blar_archive_file_path(buf, buf_len, j, &path, &path_len) != BLAR_OK) continue;
 
-    /* Count total bytes for progress */
-    for (uint64_t i = 0; i < count; i++) {
-        uint8_t *data = NULL;
-        size_t data_len = 0;
-        if (blip_archive_file_content(buf, buf_len, i, &data, &data_len) == BLIP_OK) {
-            total_bytes += data_len;
-            blip_free_content(data, data_len);
-        }
-    }
+        char full[4096];
+        int n = snprintf(full, sizeof(full), "%s/%.*s", outdir, (int)path_len, (const char *)path);
+        if (n < 0 || (size_t)n >= sizeof(full)) continue;
 
-    /* Progress: determinate extraction phase */
-    progrez_ctx *progress = progrez_create("Extracting");
-    if (progress) {
-        progrez_set_identity(progress, "miniblar", "archive extraction");
-        progrez_set_sparkline(progress, true);
-        progrez_set_determinate(progress, count, total_bytes);
-    }
-
-    uint64_t extracted = 0;
-    uint64_t failed = 0;
-
-    for (uint64_t i = 0; i < count; i++) {
-        const char *path = NULL;
-        size_t path_len = 0;
-        rc = blip_archive_file_path(buf, buf_len, i, &path, &path_len);
-        if (rc != BLIP_OK) {
-            fprintf(stderr, "\033[31mERROR: file %llu: cannot read path: %s\033[0m\n",
-                    (unsigned long long)i, blip_error_string(rc));
-            failed++;
+        uint8_t type = 0;
+        blar_archive_entry_type(buf, buf_len, j, &type);
+        if (type == BLAR_TYPE_DIR) {
+            mkdirp(full, 0755);
             continue;
         }
 
-        uint8_t *data = NULL;
-        size_t data_len = 0;
-        rc = blip_archive_file_content(buf, buf_len, i, &data, &data_len);
-        if (rc != BLIP_OK) {
-            fprintf(stderr, "\033[31mERROR: skipping '%.*s': %s\033[0m\n",
-                    (int)path_len, path, blip_error_string(rc));
-            failed++;
+        if (ensure_parent_dir(full, 0755) != 0) {
+            fprintf(stderr, "miniblar: extract: cannot create parent of '%s'\n", full);
             continue;
         }
 
-        char out_path[4096];
-        if (output_dir) {
-            int n = snprintf(out_path, sizeof(out_path), "%s/%.*s",
-                             output_dir, (int)path_len, path);
-            if (n < 0 || (size_t)n >= sizeof(out_path)) {
-                fprintf(stderr, "\033[31mERROR: skipping '%.*s': path too long\033[0m\n",
-                        (int)path_len, path);
-                blip_free_content(data, data_len);
-                failed++;
-                continue;
-            }
-        } else {
-            if (path_len >= sizeof(out_path)) {
-                fprintf(stderr, "\033[31mERROR: skipping '%.*s': path too long\033[0m\n",
-                        (int)path_len, path);
-                blip_free_content(data, data_len);
-                failed++;
-                continue;
-            }
-            memcpy(out_path, path, path_len);
-            out_path[path_len] = '\0';
-        }
-
-        if (!ensure_parent_dir(out_path)) {
-            fprintf(stderr, "\033[31mERROR: skipping '%.*s': cannot create directory: %s\033[0m\n",
-                    (int)path_len, path, strerror(errno));
-            blip_free_content(data, data_len);
-            failed++;
+        const uint8_t *data = NULL; size_t data_len = 0;
+        if (blar_archive_file_content(buf, buf_len, j, &data, &data_len) != BLAR_OK) continue;
+        bool ok = write_file(full, data, data_len);
+        blar_free_content(data, data_len);
+        if (!ok) {
+            fprintf(stderr, "miniblar: extract: cannot write '%s': %s\n", full, strerror(errno));
             continue;
         }
 
-        if (!write_file(out_path, data, data_len)) {
-            fprintf(stderr, "\033[31mERROR: skipping '%.*s': cannot write: %s\033[0m\n",
-                    (int)path_len, path, strerror(errno));
-            blip_free_content(data, data_len);
-            failed++;
-            continue;
-        }
-
-        blip_free_content(data, data_len);
-
-        /* Restore file mode and mtime from archive metadata */
-        uint16_t mode = 0;
-        int64_t mtime_ns = 0;
-        const char *owner = NULL;
-        size_t owner_len = 0;
-        blip_archive_entry_metadata(buf, buf_len, i, &mode, &mtime_ns, &owner, &owner_len);
-
-        if (mode != 0) {
-            chmod(out_path, mode);
-        }
-
+        uint16_t mode = 0; int64_t mtime_ns = 0;
+        const uint8_t *owner = NULL; size_t owner_len = 0;
+        blar_archive_entry_metadata(buf, buf_len, j, &mode, &mtime_ns, &owner, &owner_len);
+        if (mode != 0) chmod(full, (mode_t)mode);
         if (mtime_ns != 0) {
-            struct timespec times[2];
-            times[0].tv_sec = 0;
-            times[0].tv_nsec = UTIME_OMIT; /* don't change atime */
-            times[1].tv_sec = (time_t)(mtime_ns / 1000000000LL);
-            times[1].tv_nsec = (long)(mtime_ns % 1000000000LL);
-            utimensat(AT_FDCWD, out_path, times, 0);
+            struct timeval tv[2];
+            tv[0].tv_sec  = (time_t)(mtime_ns / 1000000000LL);
+            tv[0].tv_usec = (suseconds_t)((mtime_ns / 1000) % 1000000);
+            tv[1] = tv[0];
+            utimes(full, tv);
         }
-
-        /* Restore xattrs and resource fork */
-        blip_xattr_entry *file_xattrs = NULL;
-        size_t file_xattr_count = 0;
-        uint8_t *file_rfork = NULL;
-        size_t file_rfork_len = 0;
-        if (blip_archive_entry_xattrs(buf, buf_len, i,
-                &file_xattrs, &file_xattr_count,
-                &file_rfork, &file_rfork_len) == BLIP_OK) {
-            if (file_xattr_count > 0 || file_rfork_len > 0) {
-                write_file_xattrs(out_path, file_xattrs, file_xattr_count,
-                                   file_rfork, file_rfork_len);
-            }
-            blip_free_xattrs(file_xattrs, file_xattr_count,
-                              file_rfork, file_rfork_len);
-        }
-
-        bytes_done += data_len;
-        extracted++;
-        if (progress) progrez_update(progress, extracted, bytes_done);
     }
 
-    if (progress) { progrez_finish(progress); progrez_destroy(progress); }
     free(buf);
-
-    if (failed > 0) {
-        fprintf(stderr, "\n%llu extracted, %llu failed\n",
-                (unsigned long long)extracted, (unsigned long long)failed);
-        return EXIT_IO;
-    }
     return EXIT_OK;
 }
 
-/* ── cmd_verify ───────────────────────────────────────────────────────── */
-
+/* ── verify ──────────────────────────────────────────────────────────── */
 static int cmd_verify(int argc, char **argv) {
-    if (argc < 1) {
-        fprintf(stderr, "miniblar: verify: missing archive path\n");
-        return EXIT_USAGE;
-    }
-
-    const char *archive_path = argv[0];
+    if (argc < 1) { fprintf(stderr, "miniblar: verify: archive required\n"); return EXIT_USAGE; }
     size_t buf_len = 0;
-    uint8_t *buf = read_archive_plain(archive_path, &buf_len);
-    if (!buf) {
-        fprintf(stderr, "miniblar: verify: cannot open '%s': %s\n",
-                archive_path, strerror(errno));
-        return EXIT_IO;
-    }
+    uint8_t *buf = read_file(argv[0], &buf_len);
+    if (!buf) { fprintf(stderr, "miniblar: verify: cannot read '%s'\n", argv[0]); return EXIT_IO; }
 
-    if (!blip_archive_verify(buf, buf_len)) {
-        fprintf(stderr, "miniblar: verify: archive hash mismatch\n");
-        free(buf);
-        return EXIT_VERIFY;
-    }
-
+    bool outer = blar_archive_verify(buf, buf_len);
     uint64_t count = 0;
-    int32_t rc = blip_archive_file_count(buf, buf_len, &count);
-    if (rc != BLIP_OK) {
-        fprintf(stderr, "miniblar: verify: %s\n", blip_error_string(rc));
-        free(buf);
-        return EXIT_VERIFY;
+    int32_t rc = blar_archive_entry_count(buf, buf_len, &count);
+    if (rc != BLAR_OK) {
+        fprintf(stderr, "miniblar: verify: %s\n", blar_error_string(rc));
+        free(buf); return EXIT_DATA;
     }
-
-    for (uint64_t i = 0; i < count; i++) {
-        rc = blip_archive_file_verify(buf, buf_len, i);
-        if (rc != BLIP_OK) {
-            const char *path = NULL;
-            size_t path_len = 0;
-            blip_archive_file_path(buf, buf_len, i, &path, &path_len);
-            fprintf(stderr, "miniblar: verify: file %llu", (unsigned long long)i);
-            if (path) {
-                fprintf(stderr, " ('%.*s')", (int)path_len, path);
-            }
-            fprintf(stderr, ": %s\n", blip_error_string(rc));
-            free(buf);
-            return EXIT_VERIFY;
+    int failed = 0;
+    for (uint64_t j = 0; j < count; j++) {
+        if (blar_archive_file_verify(buf, buf_len, j) != BLAR_OK) {
+            const uint8_t *path = NULL; size_t path_len = 0;
+            blar_archive_file_path(buf, buf_len, j, &path, &path_len);
+            fprintf(stderr, "FAIL: %.*s\n", (int)path_len, (const char *)path);
+            failed++;
         }
     }
-
-    printf("OK: %llu files verified\n", (unsigned long long)count);
     free(buf);
+    if (!outer || failed > 0) {
+        fprintf(stderr, "miniblar: verify: %d entry failure(s); outer=%s\n",
+                failed, outer ? "ok" : "FAIL");
+        return EXIT_DATA;
+    }
+    printf("ok\n");
     return EXIT_OK;
 }
 
-/* ── cmd_info ─────────────────────────────────────────────────────────── */
-
-/* Print a JSON-escaped string (handles ", \, control chars). */
-static void json_print_escaped(FILE *f, const char *s, size_t len) {
-    fputc('"', f);
-    for (size_t i = 0; i < len; i++) {
-        unsigned char c = (unsigned char)s[i];
-        switch (c) {
-        case '"':  fputs("\\\"", f); break;
-        case '\\': fputs("\\\\", f); break;
-        case '\b': fputs("\\b", f);  break;
-        case '\f': fputs("\\f", f);  break;
-        case '\n': fputs("\\n", f);  break;
-        case '\r': fputs("\\r", f);  break;
-        case '\t': fputs("\\t", f);  break;
-        default:
-            if (c < 0x20) fprintf(f, "\\u%04x", c);
-            else fputc(c, f);
-        }
-    }
-    fputc('"', f);
-}
-
+/* ── info ────────────────────────────────────────────────────────────── */
 static int cmd_info(int argc, char **argv) {
-    if (argc < 1) {
-        fprintf(stderr, "miniblar: info: missing archive path\n");
-        return EXIT_USAGE;
-    }
-
-    /* Parse flags */
-    bool json_mode = false;
-    const char *archive_path = NULL;
-    for (int i = 0; i < argc; i++) {
-        if (strcmp(argv[i], "--json") == 0) {
-            json_mode = true;
-        } else if (!archive_path) {
-            archive_path = argv[i];
-        }
-    }
-    if (!archive_path) {
-        fprintf(stderr, "miniblar: info: missing archive path\n");
-        return EXIT_USAGE;
-    }
-
+    if (argc < 1) { fprintf(stderr, "miniblar: info: archive required\n"); return EXIT_USAGE; }
     size_t buf_len = 0;
-    uint8_t *buf = read_archive_plain(archive_path, &buf_len);
-    if (!buf) {
-        fprintf(stderr, "miniblar: info: cannot open '%s': %s\n",
-                archive_path, strerror(errno));
-        return EXIT_IO;
-    }
+    uint8_t *buf = read_file(argv[0], &buf_len);
+    if (!buf) { fprintf(stderr, "miniblar: info: cannot read '%s'\n", argv[0]); return EXIT_IO; }
 
     uint64_t count = 0;
-    int32_t rc = blip_archive_file_count(buf, buf_len, &count);
-    if (rc != BLIP_OK) {
-        fprintf(stderr, "miniblar: info: %s\n", blip_error_string(rc));
-        free(buf);
-        return EXIT_IO;
+    if (blar_archive_entry_count(buf, buf_len, &count) != BLAR_OK) {
+        fprintf(stderr, "miniblar: info: invalid archive\n");
+        free(buf); return EXIT_DATA;
     }
-
-    if (json_mode) {
-        /* ── JSON output ── */
-        printf("{\n");
-        printf("  \"archive\": "); json_print_escaped(stdout, archive_path, strlen(archive_path)); printf(",\n");
-        printf("  \"size\": %llu,\n", (unsigned long long)buf_len);
-        printf("  \"files\": %llu,\n", (unsigned long long)count);
-        printf("  \"entries\": [\n");
-
-        uint64_t total_content = 0;
-        for (uint64_t i = 0; i < count; i++) {
-            const char *path = NULL;
-            size_t path_len = 0;
-            rc = blip_archive_file_path(buf, buf_len, i, &path, &path_len);
-            if (rc != BLIP_OK) {
-                fprintf(stderr, "miniblar: info: file %llu: %s\n",
-                        (unsigned long long)i, blip_error_string(rc));
-                free(buf);
-                return EXIT_IO;
-            }
-
-            uint8_t *data = NULL;
-            size_t data_len = 0;
-            rc = blip_archive_file_content(buf, buf_len, i, &data, &data_len);
-            if (rc == BLIP_OK) {
-                printf("    {\"path\": "); json_print_escaped(stdout, path, path_len);
-                printf(", \"size\": %llu}", (unsigned long long)data_len);
-                printf("%s\n", (i + 1 < count) ? "," : "");
-                total_content += data_len;
-                blip_free_content(data, data_len);
-            }
-        }
-
-        printf("  ],\n");
-        printf("  \"total_content\": %llu,\n", (unsigned long long)total_content);
-
-        bool ok = blip_archive_verify(buf, buf_len);
-        if (ok) {
-            for (uint64_t i = 0; i < count; i++) {
-                if (blip_archive_file_verify(buf, buf_len, i) != BLIP_OK) {
-                    ok = false;
-                    break;
-                }
-            }
-        }
-        printf("  \"integrity\": \"%s\"\n", ok ? "ok" : "failed");
-        printf("}\n");
-
-        free(buf);
-        return ok ? EXIT_OK : EXIT_VERIFY;
-    }
-
-    /* ── Human-readable output ── */
-    printf("Archive: %s\n", archive_path);
-    printf("Size:    %llu bytes\n", (unsigned long long)buf_len);
-    printf("Files:   %llu\n", (unsigned long long)count);
-    printf("\n");
-
-    uint64_t total_content = 0;
-    for (uint64_t i = 0; i < count; i++) {
-        const char *path = NULL;
-        size_t path_len = 0;
-        rc = blip_archive_file_path(buf, buf_len, i, &path, &path_len);
-        if (rc != BLIP_OK) {
-            fprintf(stderr, "miniblar: info: file %llu: %s\n",
-                    (unsigned long long)i, blip_error_string(rc));
-            free(buf);
-            return EXIT_IO;
-        }
-
-        uint8_t *data = NULL;
-        size_t data_len = 0;
-        rc = blip_archive_file_content(buf, buf_len, i, &data, &data_len);
-        if (rc != BLIP_OK) {
-            fprintf(stderr, "miniblar: info: file %llu: %s\n",
-                    (unsigned long long)i, blip_error_string(rc));
-            free(buf);
-            return EXIT_IO;
-        }
-
-        printf("  %8llu  %.*s\n", (unsigned long long)data_len,
-               (int)path_len, path);
-        total_content += data_len;
-        blip_free_content(data, data_len);
-    }
-
-    printf("\n");
-    printf("Total content: %llu bytes\n", (unsigned long long)total_content);
-
-    bool ok = blip_archive_verify(buf, buf_len);
-    if (ok) {
-        for (uint64_t i = 0; i < count; i++) {
-            if (blip_archive_file_verify(buf, buf_len, i) != BLIP_OK) {
-                ok = false;
-                break;
+    uint64_t files = 0, dirs = 0, total_bytes = 0;
+    for (uint64_t j = 0; j < count; j++) {
+        uint8_t type = 0;
+        blar_archive_entry_type(buf, buf_len, j, &type);
+        if (type == BLAR_TYPE_DIR) {
+            dirs++;
+        } else {
+            files++;
+            const uint8_t *data = NULL; size_t data_len = 0;
+            if (blar_archive_file_content(buf, buf_len, j, &data, &data_len) == BLAR_OK) {
+                total_bytes += data_len;
+                blar_free_content(data, data_len);
             }
         }
     }
-    printf("Integrity: %s\n", ok ? "OK" : "FAILED");
-
-    free(buf);
-    return ok ? EXIT_OK : EXIT_VERIFY;
-}
-
-/* ── cmd_cat ──────────────────────────────────────────────────────────── */
-
-static int cmd_cat(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr, "miniblar: cat: requires <archive> <path>\n");
-        return EXIT_USAGE;
-    }
-
-    const char *archive_path = argv[0];
-    const char *file_path = argv[1];
-
-    size_t buf_len = 0;
-    uint8_t *buf = read_archive_plain(archive_path, &buf_len);
-    if (!buf) {
-        fprintf(stderr, "miniblar: cat: cannot open '%s': %s\n",
-                archive_path, strerror(errno));
-        return EXIT_IO;
-    }
-
-    uint8_t *data = NULL;
-    size_t data_len = 0;
-    int32_t rc = blip_archive_file_content_by_path(
-        buf, buf_len, file_path, strlen(file_path), &data, &data_len);
-
-    if (rc == BLIP_ERR_NOT_FOUND) {
-        fprintf(stderr, "miniblar: cat: file not found in archive: '%s'\n", file_path);
-        free(buf);
-        return EXIT_VERIFY;
-    } else if (rc != BLIP_OK) {
-        fprintf(stderr, "miniblar: cat: %s\n", blip_error_string(rc));
-        free(buf);
-        return EXIT_IO;
-    }
-
-    if (data_len > 0) {
-        fwrite(data, 1, data_len, stdout);
-    }
-
-    blip_free_content(data, data_len);
+    bool ok = blar_archive_verify(buf, buf_len);
+    printf("Archive:    %s\n", argv[0]);
+    printf("Size:       %zu bytes\n", buf_len);
+    printf("Files:      %llu\n", (unsigned long long)files);
+    printf("Dirs:       %llu\n", (unsigned long long)dirs);
+    printf("Content:    %llu bytes\n", (unsigned long long)total_bytes);
+    printf("Integrity:  %s\n", ok ? "ok" : "FAIL");
     free(buf);
     return EXIT_OK;
 }
 
-/* ── cmd_peek ─────────────────────────────────────────────────────────── */
+/* ── cat ─────────────────────────────────────────────────────────────── */
+static int cmd_cat(int argc, char **argv) {
+    if (argc < 2) { fprintf(stderr, "miniblar: cat: usage: cat <archive> <path>\n"); return EXIT_USAGE; }
+    size_t buf_len = 0;
+    uint8_t *buf = read_file(argv[0], &buf_len);
+    if (!buf) { fprintf(stderr, "miniblar: cat: cannot read '%s'\n", argv[0]); return EXIT_IO; }
 
-static int cmd_peek(int argc, char **argv) {
-    return cmd_peek_common("miniblar", argc, argv);
-}
+    /* Apply the same path normalization the archive uses on storage so callers
+     * can pass either the raw path they fed `create` or the normalized form. */
+    const char *query = normalize_path_inplace(argv[1]);
 
-/* ── cmd_poke ─────────────────────────────────────────────────────────── */
-
-static int cmd_poke(int argc, char **argv) {
-    return cmd_poke_common("miniblar", argc, argv);
-}
-
-/* ── cmd_to_json ──────────────────────────────────────────────────────── */
-
-static int cmd_to_json(int argc, char **argv) {
-    return cmd_to_json_common("miniblar", argc, argv);
-}
-
-/* ── cmd_from_json ────────────────────────────────────────────────────── */
-
-static int cmd_from_json(int argc, char **argv) {
-    /* Reject compression/encryption flags — not supported by miniblar */
-    for (int i = 0; i < argc; i++) {
-        if (strcmp(argv[i], "-z") == 0) {
-            fprintf(stderr, "miniblar: from-json: compression not supported (use blar)\n");
-            return EXIT_USAGE;
-        }
-        if (strcmp(argv[i], "-e") == 0) {
-            fprintf(stderr, "miniblar: from-json: encryption not supported (use blar)\n");
-            return EXIT_USAGE;
-        }
+    const uint8_t *data = NULL; size_t data_len = 0;
+    int32_t rc = blar_archive_file_content_by_path(
+        buf, buf_len,
+        (const uint8_t *)query, strlen(query),
+        &data, &data_len);
+    if (rc == BLAR_ERR_NOT_FOUND) {
+        fprintf(stderr, "miniblar: cat: '%s' not found\n", argv[1]);
+        free(buf); return EXIT_DATA;
+    } else if (rc != BLAR_OK) {
+        fprintf(stderr, "miniblar: cat: %s\n", blar_error_string(rc));
+        free(buf); return EXIT_DATA;
     }
-    return cmd_from_json_common("miniblar", argc, argv);
+    fwrite(data, 1, data_len, stdout);
+    blar_free_content(data, data_len);
+    free(buf);
+    return EXIT_OK;
+}
+
+/* ── peek (out-of-profile stub) ──────────────────────────────────────── */
+/* mini_blar's profile excludes the `peek` introspection helper that lives
+ * in the full blar/BLIP toolchain. Print main usage to stay friendly to
+ * pipelines that probe for help. */
+static int cmd_peek(int argc, char **argv) {
+    (void)argc; (void)argv;
+    print_usage(stdout);
+    fprintf(stdout, "\nNote: 'peek' is not part of the mini_blar profile (use blar instead).\n");
+    return EXIT_OK;
+}
+
+/* ── main ────────────────────────────────────────────────────────────── */
+int main(int argc, char **argv) {
+    if (argc < 2) { print_usage(stderr); return EXIT_USAGE; }
+    const char *cmd = argv[1];
+
+    if (strcmp(cmd, "-h") == 0 || strcmp(cmd, "--help") == 0) {
+        print_usage(stdout); return EXIT_OK;
+    }
+    if (strcmp(cmd, "--about") == 0 || strcmp(cmd, "--version") == 0) {
+        print_about(); return EXIT_OK;
+    }
+
+    /* Tar-style shorthand */
+    int consumed = 0;
+    mb_op_t op = parse_tar_flags(cmd, &consumed);
+    bool tar_style = (consumed != 0);
+    if (!tar_style) {
+        if      (strcmp(cmd, "create")  == 0) op = OP_CREATE;
+        else if (strcmp(cmd, "list")    == 0) op = OP_LIST;
+        else if (strcmp(cmd, "extract") == 0) op = OP_EXTRACT;
+        else if (strcmp(cmd, "verify")  == 0) op = OP_VERIFY;
+        else if (strcmp(cmd, "info")    == 0) op = OP_INFO;
+        else if (strcmp(cmd, "cat")     == 0) op = OP_CAT;
+        else if (strcmp(cmd, "peek")    == 0) return cmd_peek(argc - 2, argv + 2);
+        else op = OP_NONE;
+    }
+
+    int sub_argc = argc - 2;
+    char **sub_argv = argv + 2;
+
+    switch (op) {
+        case OP_CREATE:  return tar_style ? cmd_create_tar(sub_argc, sub_argv)
+                                          : cmd_create    (sub_argc, sub_argv);
+        case OP_LIST:    return cmd_list   (sub_argc, sub_argv);
+        case OP_EXTRACT: return cmd_extract(sub_argc, sub_argv);
+        case OP_VERIFY:  return cmd_verify (sub_argc, sub_argv);
+        case OP_INFO:    return cmd_info   (sub_argc, sub_argv);
+        case OP_CAT:     return cmd_cat    (sub_argc, sub_argv);
+        default:
+            fprintf(stderr, "miniblar: unknown command '%s'\n", cmd);
+            print_usage(stderr);
+            return EXIT_USAGE;
+    }
 }
