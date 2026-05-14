@@ -5,8 +5,7 @@
     .minimum_zig_version = "0.15.0",
     .dependencies = .{
         .blip = .{
-            .url = "https://github.com/pmarreck/BLIP/archive/refs/tags/v3.0.0.tar.gz",
-            .hash = "blip-0.1.0-rcNuGMWVBwAGTmRR3xaTb33jnAIVxcD6zlXlDZ99YPy5",
+            .path = "../BLIP-zig016",
         },
     },
     .paths = .{

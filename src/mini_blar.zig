@@ -516,14 +516,14 @@ pub fn serializeDirEntry(allocator: Allocator, dir: DirEntry, to_free: *std.Arra
 /// Entries are serialized in the order given — caller controls ordering.
 /// Returns the complete archive as a byte slice. Caller owns returned memory.
 pub fn createArchive(allocator: Allocator, files: []const FileEntry) (Allocator.Error || ContainerError || compression_mod.CompressionError)![]u8 {
-    var to_free: std.ArrayList([]u8) = .{};
+    var to_free: std.ArrayList([]u8) = .empty;
     defer {
         for (to_free.items) |item| allocator.free(item);
         to_free.deinit(allocator);
     }
 
     // Serialize each file into a FILE container (ARRAY-based)
-    var file_elements: std.ArrayList([]const u8) = .{};
+    var file_elements: std.ArrayList([]const u8) = .empty;
     defer file_elements.deinit(allocator);
 
     for (files) |file| {
@@ -566,7 +566,7 @@ pub fn createFullArchive(
     comp_id: ?ct.CompressionId,
     num_threads: u8,
 ) (Allocator.Error || ContainerError || compression_mod.CompressionError)![]u8 {
-    var to_free: std.ArrayList([]u8) = .{};
+    var to_free: std.ArrayList([]u8) = .empty;
     defer {
         for (to_free.items) |item| allocator.free(item);
         to_free.deinit(allocator);
@@ -574,13 +574,13 @@ pub fn createFullArchive(
 
     // Items allocated by parallel threads using page_allocator (thread-safe)
     const pa = std.heap.page_allocator;
-    var parallel_to_free: std.ArrayList([]u8) = .{};
+    var parallel_to_free: std.ArrayList([]u8) = .empty;
     defer {
         for (parallel_to_free.items) |item| pa.free(item);
         parallel_to_free.deinit(allocator);
     }
 
-    var entry_elements: std.ArrayList([]const u8) = .{};
+    var entry_elements: std.ArrayList([]const u8) = .empty;
     defer entry_elements.deinit(allocator);
 
     // Phase 1: Serialize FILE entries and collect their xxHash64 checksums
@@ -646,18 +646,10 @@ pub fn createFullArchive(
             r.* = .{
                 .bytes = &.{},
                 .hash = .{0} ** 8,
-                .to_free_items = .{},
+                .to_free_items = .empty,
                 .err = null,
             };
         }
-
-        // Use per-file single-threaded compression to avoid oversubscription
-        var pool: std.Thread.Pool = undefined;
-        pool.init(.{
-            .allocator = allocator,
-            .n_jobs = @intCast(@min(resolved_threads, file_count)),
-        }) catch return error.OutOfMemory;
-        defer pool.deinit();
 
         // Use page_allocator for per-thread work — it's thread-safe (mmap-based).
         // The caller's allocator may not be thread-safe (e.g., testing.allocator).
@@ -667,67 +659,102 @@ pub fn createFullArchive(
         var atomic_files_done = std.atomic.Value(u64).init(0);
         var atomic_bytes_done = std.atomic.Value(u64).init(0);
 
-        var wg: std.Thread.WaitGroup = .{};
-        for (file_slots, 0..) |entry_idx, slot| {
-            pool.spawnWg(&wg, struct {
-                fn work(
-                    alloc: Allocator,
-                    file: FileEntry,
-                    cid: ?ct.CompressionId,
-                    result: *FileResult,
-                    a_files: *std.atomic.Value(u64),
-                    a_bytes: *std.atomic.Value(u64),
-                ) void {
-                    var local_to_free: std.ArrayList([]u8) = .{};
-                    const file_bytes = serializeFileEntry(alloc, file, &local_to_free, cid, null, null) catch |e| {
+        // 0.16: std.Thread.Pool / Thread.WaitGroup are gone. We spawn a bounded
+        // worker pool manually using Thread.spawn + a shared atomic next-index
+        // counter (work-stealing-lite). Each worker pulls slots until the queue
+        // is empty, then exits. Main thread joins all workers (or sleeps via
+        // std.Io.sleep while polling progress).
+        const num_workers: usize = @intCast(@min(resolved_threads, file_count));
+        var next_slot = std.atomic.Value(usize).init(0);
+
+        const WorkerCtx = struct {
+            alloc: Allocator,
+            entries_ptr: []const ArchiveEntry,
+            file_slots_ptr: []const usize,
+            cid: ?ct.CompressionId,
+            file_results_ptr: []FileResult,
+            a_files: *std.atomic.Value(u64),
+            a_bytes: *std.atomic.Value(u64),
+            next: *std.atomic.Value(usize),
+            file_count: usize,
+        };
+
+        const worker_fn = struct {
+            fn run(ctx: WorkerCtx) void {
+                while (true) {
+                    const slot = ctx.next.fetchAdd(1, .acq_rel);
+                    if (slot >= ctx.file_count) return;
+                    const entry_idx = ctx.file_slots_ptr[slot];
+                    const file = ctx.entries_ptr[entry_idx].file;
+                    const result = &ctx.file_results_ptr[slot];
+
+                    var local_to_free: std.ArrayList([]u8) = .empty;
+                    const file_bytes = serializeFileEntry(ctx.alloc, file, &local_to_free, ctx.cid, null, null) catch |e| {
                         result.err = e;
-                        // Clean up on error
-                        for (local_to_free.items) |item| alloc.free(item);
-                        local_to_free.deinit(alloc);
-                        // Still increment so progress loop terminates
-                        _ = a_files.fetchAdd(1, .release);
-                        _ = a_bytes.fetchAdd(file.content.len, .release);
-                        return;
+                        for (local_to_free.items) |item| ctx.alloc.free(item);
+                        local_to_free.deinit(ctx.alloc);
+                        _ = ctx.a_files.fetchAdd(1, .release);
+                        _ = ctx.a_bytes.fetchAdd(file.content.len, .release);
+                        continue;
                     };
 
-                    // Extract xxHash64
                     const file_view = container.parseLPHeader(file_bytes) catch |e| {
                         result.err = e;
-                        for (local_to_free.items) |item| alloc.free(item);
-                        local_to_free.deinit(alloc);
-                        _ = a_files.fetchAdd(1, .release);
-                        _ = a_bytes.fetchAdd(file.content.len, .release);
-                        return;
+                        for (local_to_free.items) |item| ctx.alloc.free(item);
+                        local_to_free.deinit(ctx.alloc);
+                        _ = ctx.a_files.fetchAdd(1, .release);
+                        _ = ctx.a_bytes.fetchAdd(file.content.len, .release);
+                        continue;
                     };
                     const csum = file_view.checksumSlice();
                     var hash: [8]u8 = .{0} ** 8;
-                    if (csum.len == 8) {
-                        @memcpy(&hash, csum[0..8]);
-                    }
+                    if (csum.len == 8) @memcpy(&hash, csum[0..8]);
 
                     result.bytes = file_bytes;
                     result.hash = hash;
                     result.to_free_items = local_to_free;
-
-                    // Signal completion for progress tracking
-                    _ = a_files.fetchAdd(1, .release);
-                    _ = a_bytes.fetchAdd(file.content.len, .release);
+                    _ = ctx.a_files.fetchAdd(1, .release);
+                    _ = ctx.a_bytes.fetchAdd(file.content.len, .release);
                 }
-            }.work, .{ thread_alloc, entries[entry_idx].file, comp_id, &file_results[slot], &atomic_files_done, &atomic_bytes_done });
+            }
+        }.run;
+
+        const workers = try allocator.alloc(std.Thread, num_workers);
+        defer allocator.free(workers);
+        for (workers, 0..) |*t, wi| {
+            t.* = std.Thread.spawn(.{}, worker_fn, .{
+                WorkerCtx{
+                    .alloc = thread_alloc,
+                    .entries_ptr = entries,
+                    .file_slots_ptr = file_slots,
+                    .cid = comp_id,
+                    .file_results_ptr = file_results,
+                    .a_files = &atomic_files_done,
+                    .a_bytes = &atomic_bytes_done,
+                    .next = &next_slot,
+                    .file_count = file_count,
+                },
+            }) catch {
+                // Failed to spawn — join previously-spawned workers (after marking
+                // remaining slots done so they exit) and return OOM.
+                _ = next_slot.fetchAdd(file_count, .release);
+                for (workers[0..wi]) |w| w.join();
+                return error.OutOfMemory;
+            };
         }
 
-        // Poll progress while workers compress files.
-        // Main thread doesn't participate as a worker (pool has enough threads).
+        // Poll progress while workers compress files (main thread doesn't work).
+        const sleep_io = std.Io.Threaded.global_single_threaded.io();
         while (atomic_files_done.load(.acquire) < file_count) {
             if (progress_fn) |cb| {
                 cb(entries_done + atomic_files_done.load(.acquire),
                     bytes_done + atomic_bytes_done.load(.acquire),
                     progress_ctx);
             }
-            std.Thread.sleep(100 * std.time.ns_per_ms);
+            std.Io.sleep(sleep_io, .fromMilliseconds(100), .awake) catch {};
         }
-        // Formally wait for pool (should return near-instantly since all work is done)
-        pool.waitAndWork(&wg);
+        // Join all workers (returns near-instantly since work is done).
+        for (workers) |t| t.join();
 
         // Final progress update
         entries_done += file_count;
@@ -808,7 +835,7 @@ pub fn createFullArchive(
                         const parent = f.path[0..slash];
                         const gop = try parent_child_hashes.getOrPut(parent);
                         if (!gop.found_existing) {
-                            gop.value_ptr.* = .{};
+                            gop.value_ptr.* = .empty;
                         }
                         try gop.value_ptr.append(allocator, hash);
                     }
@@ -1052,7 +1079,7 @@ pub const ArchiveReader = struct {
 
         // Collect child FILE checksums
         const count = try self.entryCount();
-        var child_hashes: std.ArrayList([8]u8) = .{};
+        var child_hashes: std.ArrayList([8]u8) = .empty;
         defer child_hashes.deinit(allocator);
 
         for (0..count) |i| {
@@ -1546,7 +1573,7 @@ test "Merkle hash uses per-file xxHash64 from FILE ARRAY container" {
     // the FILE ARRAY's xxHash64 checksum
     const file = FileEntry{ .path = "mydir/file.txt", .content = "hello", .mode = 0o644 };
 
-    var to_free: std.ArrayList([]u8) = .{};
+    var to_free: std.ArrayList([]u8) = .empty;
     defer {
         for (to_free.items) |item| allocator.free(item);
         to_free.deinit(allocator);

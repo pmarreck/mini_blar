@@ -65,8 +65,8 @@ pub fn build(b: *std.Build) void {
         .name = "miniblar",
         .root_module = cli_module,
     });
-    miniblar.linkLibrary(static_lib);
-    miniblar.linkLibrary(blip_dep.artifact("blip"));
+    miniblar.root_module.linkLibrary(static_lib);
+    miniblar.root_module.linkLibrary(blip_dep.artifact("blip"));
     b.installArtifact(miniblar);
 
     // ── Tests ────────────────────────────────────────────────────────────
