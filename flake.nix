@@ -4,16 +4,21 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    zig-overlay = {
+      url = "github:mitchellh/zig-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     blip = {
       url = "github:pmarreck/BLIP/v3.0.0";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, blip, ... }:
+  outputs = { self, nixpkgs, flake-utils, zig-overlay, blip, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        zig = zig-overlay.packages.${system}."0.16.0";
         pname = "mini_blar";
         version = "3.0.0";
         isDarwin = pkgs.stdenv.isDarwin;
@@ -44,7 +49,7 @@
           dontFixup = true;
         };
 
-        commonInputs = [ pkgs.zig ]
+        commonInputs = [ zig ]
           ++ pkgs.lib.optionals isDarwin [
             pkgs.darwin.cctools
             pkgs.apple-sdk
