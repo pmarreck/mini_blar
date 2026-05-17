@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "enable_compression", false);
 
     // mini_blar Zig module — depends on BLIP's `blip` module
-    const mini_blar_module = b.createModule(.{
+    const mini_blar_module = b.addModule("mini_blar", .{
         .root_source_file = b.path("src/mini_blar.zig"),
         .target = target,
         .optimize = optimize,
