@@ -16,7 +16,7 @@ jobs:
       - uses: "DeterminateSystems/determinate-nix-action@v3"
       - uses: "DeterminateSystems/flakehub-push@main"
         with:
-          name: "pmarreck/BLIP"
+          name: "pmarreck/mini_blar"
           rolling: true
           visibility: "public"
           include-output-paths: true
