@@ -35,8 +35,9 @@ echo "Building (ReleaseFast)..."
 nix develop -c zig build -Doptimize=ReleaseFast 2>/dev/null \
 	|| { echo "FATAL: build failed"; exit 1; }
 
-run_suite "Zig Unit Tests"       "nix develop -c zig build test 2>&1"
-run_suite "miniblar CLI Tests"   "bash tests/miniblar_test.sh"
+run_suite "Zig Unit Tests"        "nix develop -c zig build test 2>&1"
+run_suite "Zig Unit Tests (zstd)" "nix develop -c zig build test -Denable_compression=true 2>&1"
+run_suite "miniblar CLI Tests"    "bash tests/miniblar_test.sh"
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════════╗"
