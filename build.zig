@@ -13,9 +13,25 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // build_options — mini_blar's profile pins enable_compression=false.
+    // Compression is opt-in: the default profile keeps the no-op stub (zero
+    // codecs linked). -Denable_compression=true links zstd — the ONLY codec —
+    // for consumers like validate_gui's single-binary launcher.
+    const enable_compression = b.option(
+        bool,
+        "enable_compression",
+        "Link the zstd codec for per-file compression (default: false)",
+    ) orelse false;
+    // We compress once at build time and decompress on every launch; zstd
+    // decompression speed is ~level-independent, so bias hard for ratio.
+    const zstd_level = b.option(
+        u8,
+        "zstd_level",
+        "zstd compression level 1-22 (default: 19)",
+    ) orelse 19;
+
     const build_options = b.addOptions();
-    build_options.addOption(bool, "enable_compression", false);
+    build_options.addOption(bool, "enable_compression", enable_compression);
+    build_options.addOption(u8, "zstd_level", zstd_level);
 
     // mini_blar Zig module — depends on BLIP's `blip` module
     const mini_blar_module = b.addModule("mini_blar", .{
@@ -27,6 +43,18 @@ pub fn build(b: *std.Build) void {
         },
     });
     mini_blar_module.addOptions("build_options", build_options);
+
+    // Lazy zstdz dep: only fetched/compiled when compression is enabled.
+    // Its "zstd" module (@cImport of the ZSTD C API) already carries the
+    // include paths and linkLibrary of the C artifact, so an import suffices.
+    if (enable_compression) {
+        if (b.lazyDependency("zstdz", .{
+            .target = target,
+            .optimize = optimize,
+        })) |zstdz_dep| {
+            mini_blar_module.addImport("zstd", zstdz_dep.module("zstd"));
+        }
+    }
 
     // C FFI surface (libmini_blar.a) — re-exports `blar_archive_*` for the C CLI.
     // link_libc is required on Linux because c_api.zig uses std.heap.c_allocator.

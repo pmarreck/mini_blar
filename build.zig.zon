@@ -8,6 +8,15 @@
             .url = "https://github.com/pmarreck/BLIP/archive/refs/tags/v3.1.0.tar.gz",
             .hash = "blip-0.1.0-rcNuGOSZBwBX-Q-IYY7LA5enIHtkIUZetkSenD40cRH8",
         },
+        // zstd codec for -Denable_compression=true builds. Lazy: never fetched
+        // for the default (stub) profile. Pinned ≥0a478bb — that rev adds
+        // -Dcpu=baseline + an ISA-baseline check so Garnix-cached artifacts
+        // don't ship AVX-512 code that SIGILLs on non-AVX-512 hosts (Zen 2).
+        .zstdz = .{
+            .url = "https://github.com/pmarreck/zstdz/archive/46a916ab3bb24c2298f1559a1b36691caab53ffa.tar.gz",
+            .hash = "zstdz-1.6.0-yDWjzjJvNADuXVquo1ire6azJM7pPcP-DIqOXWGsLr6G",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

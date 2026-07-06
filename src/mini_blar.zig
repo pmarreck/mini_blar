@@ -7,9 +7,13 @@ pub const leaf = @import("blip").leaf_mod;
 pub const array_mod = @import("blip").array_mod;
 pub const dict_mod = @import("blip").dict_mod;
 const build_options = @import("build_options");
-// mini_blar's profile forbids compression — always use the stub.
-// build_options.enable_compression is kept for future variants.
-pub const compression_mod = @import("compression_stub.zig");
+// mini_blar's default profile forbids compression — the no-op stub keeps the
+// binary codec-free. -Denable_compression=true swaps in the zstd-only module
+// (single codec, no runtime dispatch) for self-extracting/launcher use cases.
+pub const compression_mod = if (build_options.enable_compression)
+    @import("compression_zstd.zig")
+else
+    @import("compression_stub.zig");
 // data_mod removed in v2 — use leaf directly (data.zig merged into leaf.zig)
 const testing = std.testing;
 
@@ -287,6 +291,7 @@ pub fn serializeFileEntry(allocator: Allocator, file: FileEntry, to_free: *std.A
             break :blk compression_mod.compressContainer(allocator, comp_id.?, raw, compress_progress_fn, null, compress_progress_ctx, 1) catch |e| switch (e) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.CompressionFailed => return error.CompressionFailed,
+                error.UnsupportedCompression => return error.UnsupportedCompression,
                 else => return error.InvalidContainerType,
             };
         }
@@ -1612,18 +1617,25 @@ test "per-file compression: createFullArchive with comp_id produces recoverable 
         .{ .file = .{ .path = "data.bin", .content = "some binary data here" } },
     };
 
-    // Create archive with LZ4 per-file compression
-    const archive = try createFullArchive(allocator, &entries, null, null, null, .lz4, 0);
+    // Create archive with zstd per-file compression
+    const archive = try createFullArchive(allocator, &entries, null, null, null, .zstd, 0);
     defer allocator.free(archive);
 
     const reader = try ArchiveReader.init(archive);
     try testing.expect(try reader.verifyMagic());
     try testing.expectEqual(@as(u64, 2), try reader.entryCount());
 
-    // Element [1] of the first FILE should be a compressed LP container
+    // Element [1] of the first FILE should be a compressed LP container,
+    // carrying the profile's checksum (xxhash64 — NOT blake3) over the
+    // stored/compressed bytes so verifyFileAt works before decompression.
     const arr0 = try reader.fileArrayAt(0);
     const data_view0 = try arr0.elementAt(1);
-    try testing.expectEqual(@as(?ct.CompressionId, .lz4), data_view0.comp_id);
+    try testing.expectEqual(@as(?ct.CompressionId, .zstd), data_view0.comp_id);
+    try testing.expectEqual(@as(?ct.ChecksumId, .xxhash64), data_view0.csum_id);
+
+    // verifyFileAt must pass on compressed entries (shim verifies BEFORE decompress)
+    try testing.expect(try reader.verifyFileAt(0));
+    try testing.expect(try reader.verifyFileAt(1));
 
     // fileContentDecompress should recover the original content
     const content0 = try reader.fileContentDecompress(0, allocator);
@@ -1659,17 +1671,17 @@ test "fileContentDecompress works on uncompressed archives" {
     try testing.expectEqualSlices(u8, "uncompressed content", content);
 }
 
-test "per-file compression with all algorithms" {
+test "per-file compression: zstd is the only supported codec" {
     if (comptime !build_options.enable_compression) return;
     const allocator = testing.allocator;
-    const algos = [_]ct.CompressionId{ .lz4, .zstd, .lzma2, .bzip2 };
 
-    for (algos) |algo| {
-        const entries = [_]ArchiveEntry{
-            .{ .file = .{ .path = "test.txt", .content = "Hello, per-file compression test!" } },
-        };
+    const entries = [_]ArchiveEntry{
+        .{ .file = .{ .path = "test.txt", .content = "Hello, per-file compression test!" } },
+    };
 
-        const archive = try createFullArchive(allocator, &entries, null, null, null, algo, 0);
+    // zstd round-trips
+    {
+        const archive = try createFullArchive(allocator, &entries, null, null, null, .zstd, 0);
         defer allocator.free(archive);
 
         const reader = try ArchiveReader.init(archive);
@@ -1677,6 +1689,75 @@ test "per-file compression with all algorithms" {
         defer allocator.free(content);
         try testing.expectEqualSlices(u8, "Hello, per-file compression test!", content);
     }
+
+    // every other codec id is rejected — zstd-only build, no multi-codec dispatch
+    const rejected = [_]ct.CompressionId{ .lz4, .lzma2, .bzip2 };
+    for (rejected) |algo| {
+        try testing.expectError(
+            error.UnsupportedCompression,
+            createFullArchive(allocator, &entries, null, null, null, algo, 1),
+        );
+    }
+}
+
+test "per-file compression: zstd round-trips large multi-chunk content" {
+    if (comptime !build_options.enable_compression) return;
+    const allocator = testing.allocator;
+
+    // >4 MB exercises the chunked ZSTD_compressStream2 path (chunk = 4 MB);
+    // repetitive content also proves compression actually shrinks the archive.
+    const big_len: usize = 5 * 1024 * 1024;
+    const big = try allocator.alloc(u8, big_len);
+    defer allocator.free(big);
+    for (big, 0..) |*byte, i| {
+        byte.* = @intCast((i / 1024) % 251);
+    }
+
+    const entries = [_]ArchiveEntry{
+        .{ .file = .{ .path = "big.bin", .content = big } },
+    };
+
+    const archive = try createFullArchive(allocator, &entries, null, null, null, .zstd, 1);
+    defer allocator.free(archive);
+
+    // Compressible data must actually compress (the point of the exercise)
+    try testing.expect(archive.len < big_len / 2);
+
+    const reader = try ArchiveReader.init(archive);
+    try testing.expect(try reader.verifyFileAt(0));
+    const content = try reader.fileContentDecompress(0, allocator);
+    defer allocator.free(content);
+    try testing.expectEqualSlices(u8, big, content);
+}
+
+test "per-file compression: corrupting stored bytes is caught before decompress" {
+    if (comptime !build_options.enable_compression) return;
+    const allocator = testing.allocator;
+
+    const entries = [_]ArchiveEntry{
+        .{ .file = .{ .path = "x.txt", .content = "corruption target payload, long enough to have a body" } },
+    };
+
+    const archive = try createFullArchive(allocator, &entries, null, null, null, .zstd, 0);
+    defer allocator.free(archive);
+
+    const reader = try ArchiveReader.init(archive);
+    try testing.expect(try reader.verifyFileAt(0));
+
+    // Locate the compressed LP (element [1] of FILE [0]) and flip a byte in
+    // its middle — inside the stored/compressed payload, away from headers.
+    const arr = try reader.fileArrayAt(0);
+    const data_view = try arr.elementAt(1);
+    const lp_start = @intFromPtr(data_view.buf.ptr) - @intFromPtr(archive.ptr);
+    archive[lp_start + data_view.buf.len / 2] ^= 0xFF;
+
+    // verifyFileAt (xxhash64 over stored bytes) must now fail...
+    try testing.expect(!(try reader.verifyFileAt(0)));
+    // ...and decompressContainer must reject rather than emit garbage.
+    try testing.expectError(
+        error.HashMismatch,
+        compression_mod.decompressContainer(allocator, data_view.buf),
+    );
 }
 
 test "enable_compression flag: archive create/read works regardless of flag" {
@@ -1731,8 +1812,12 @@ test "enable_compression flag: build_options reflects correct state" {
     const flag = build_options.enable_compression;
     // The flag is a comptime bool — if we're running, it compiled correctly
     if (flag) {
-        // Compression enabled: real compression module should be loaded
-        // (verified by the compression-specific tests that also run)
+        // Compression enabled: the module is zstd-ONLY. Non-zstd comp_ids are
+        // rejected at the module boundary, same error as the stub gives.
+        try testing.expectError(
+            error.UnsupportedCompression,
+            compression_mod.compressContainer(testing.allocator, .lzma2, "test", null, null, null, 0),
+        );
     } else {
         // Compression disabled: stub should return UnsupportedCompression
         try testing.expectError(
@@ -1740,6 +1825,12 @@ test "enable_compression flag: build_options reflects correct state" {
             compression_mod.compressContainer(testing.allocator, .lzma2, "test", null, null, null, 0),
         );
     }
+}
+
+// Pull in the selected compression module's own test blocks (the zstd module
+// carries container-level round-trip tests; the stub has none).
+test {
+    _ = compression_mod;
 }
 test "createArchive preserves caller ordering" {
     const alloc = testing.allocator;
