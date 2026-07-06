@@ -45,6 +45,11 @@ zig build -Denable_compression=true -Dzstd_level=22   # override level (default 
 - The zstd level is baked at build time (compress once at build, decompress
   on every launch → bias for ratio; zstd decompress speed is
   ~level-independent).
+- **Reproducibility caveat:** multi-threaded zstd (`num_threads != 1`)
+  produces nondeterministic archive bytes build-to-build (worker chunking
+  varies). If you need a blessed hash over the archive, pass
+  `num_threads = 1` to `createFullArchive`. Decompressed content is
+  identical either way.
 
 ## Build
 
