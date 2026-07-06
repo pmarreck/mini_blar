@@ -20,8 +20,15 @@ dispatch; default build keeps the no-op stub → zero codecs linked).
 - [x] Implement `src/compression_zstd.zig` (port of blar's zstd arms; wrapper LP `CSUM=xxhash64` per profile — not blar's blake3_128); stub kept as signature twin; 28/28 stub + 33/33 zstd tests green (2026-07-06 ~2:50 PM EST)
 - [x] flake.nix: removed vestigial zigDeps FOD (deps are vendored in `zig-pkg/`; FOD had been unbuildable since vendoring, surviving on cache substitution only); `-Dcpu=baseline` on all builds/checks (ISA-poisoning guard, cf. zstdz@0a478bb); new `checks.test-compression` (musl-targeted on Linux so the libc-linked test exe spawns in the sandbox) (2026-07-06 ~3:00 PM EST)
 - [x] `./test` runs both profiles; full suite green (2026-07-06 ~3:05 PM EST)
-- [ ] Push, Garnix green (incl. new `test-compression` check)
-- [ ] Reply to validate_gui@thelio-pm (LLMsend) — they'll bump their mini_blar dep, flip shim to comp_id=.zstd
+- [x] Push, Garnix green 5/5 (incl. new `test-compression` check) (2026-07-06 ~3:05 PM EST)
+- [x] Reply to validate_gui (LLMsend note + ping; local session — "thelio-pm" == this box) (2026-07-06 ~3:10 PM EST)
+
+## Backlog (optional)
+
+- [ ] Bump blip dep v3.1.0 → v3.2.0: free `DictReader.findKey` O(n log n)
+      speedup (was O(n²)), opt-in `DictIndex`; no wire change, backward
+      compatible (per BLIP's 2026-06-02 inbox note). Low priority — our
+      metadata dicts are small.
 
 **Interface contract promised to validate_gui (keep stable):**
 `createArchive`/`createFullArchive` accept per-entry `comp_id=.zstd`;
