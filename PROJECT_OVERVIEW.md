@@ -15,12 +15,20 @@ reader.
 
 ## Scope (the constrained subset)
 
-mini_blar archives:
+mini_blar archives (default profile):
 
 - Container types: `FILE` (TYPE=5) and `DIR` (TYPE=7) only
 - Attributes: `TYPE`, `CSUM`, `VAL` (no `COMP`, `ENC`, `SEG`, `SIG`)
 - Checksums: `xxhash64` only (no CRC32, no BLAKE3-128)
 - No compression, encryption, container expansion, or signing
+
+**Build-time exception:** `-Denable_compression=true` links exactly one codec
+(zstd, via the vendored `zstdz` dep) and permits per-file `COMP=zstd`
+containers, checksummed with xxhash64 over the stored bytes. This exists for
+the validate_gui single-binary launcher (compress once at build time,
+transparently decompress via `fileContentDecompress` on every launch). The
+default build keeps the no-op stub — zero codecs linked. Compression level is
+a build option (`-Dzstd_level`, default 19).
 
 ## Architecture
 

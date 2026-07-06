@@ -41,11 +41,22 @@ C header for the FFI — the public API surface for any C consumer.
 
 ## src/compression_stub.zig
 
-No-op compression module — satisfies the type-system reference in
-`mini_blar.zig` without pulling in heavy compression deps. mini_blar's
-profile pins `enable_compression=false`, so the stub's
-`UnsupportedCompression` / `OutOfMemory` / `CompressionFailed` error set is
-never actually raised at runtime.
+No-op compression module — the default (`-Denable_compression=false`).
+Signature twin of `compression_zstd.zig` (same fn signatures + error set) so
+`mini_blar.zig`'s catch/switch arms compile identically in both modes; always
+returns `error.UnsupportedCompression`, links zero codecs.
+
+## src/compression_zstd.zig
+
+zstd-only compression module, selected by `-Denable_compression=true` via the
+comptime switch in `mini_blar.zig`. Ported from blar's `compression.zig` zstd
+arms (streaming ZSTD_compressStream2 with 4 MB progress chunks; single-shot
+below that). `compressContainer` wraps compressed bytes in an LP DATA
+container with `COMP=zstd`, `DECOMP_LEN`, and `CSUM=xxhash64` over stored
+bytes (verify-before-decompress); `decompressContainer` mirrors it. Any
+non-zstd comp_id → `error.UnsupportedCompression`. Level is comptime from
+`-Dzstd_level` (default 19). Depends on vendored `zstdz` (zig-pkg/), pinned
+≥0a478bb for the `-Dcpu=baseline` ISA fix.
 
 ## src/miniblar.c
 

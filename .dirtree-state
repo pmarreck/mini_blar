@@ -1,0 +1,7 @@
+# Dirtree: Stateful directory trees in the CLI for humans and LLMs. https://github.com/pmarreck/dirtree
+ver=1.2
+annotate=[
+	src/compression_stub.zig = No-op compression stub (default profile) — signature twin of compression_zstd.zig, zero codecs linked
+	src/compression_zstd.zig = zstd-only compression module (-Denable_compression=true): BLIP-container-aware compress/decompress, CSUM=xxhash64, comptime level
+	zig-pkg = Vendored Zig deps (Zig 0.16 project-local package store): blip, zstdz — sandboxed builds need no network
+]
