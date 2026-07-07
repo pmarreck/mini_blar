@@ -32,7 +32,7 @@ dispatch; default build keeps the no-op stub → zero codecs linked).
       emits identical ST/MT-path bytes for our params, so archives are
       byte-identical to the previous rev). Probe: 36 MB level-19 15.0s → 3.65s
       (4.11×). serializeFileEntry gained a num_threads param. (2026-07-07 ~1:55 PM EST)
-- [ ] Push, CI green, notify validate_gui (expect their 12.1s pack → ~3-4s)
+- [x] Push, Garnix 5/5 green, validate_gui notified (rev 50bc69f75540; expect their 12.1s pack → ~3-4s; awaiting their re-measure) (2026-07-07 ~2:15 PM EST)
 
 ## Backlog (optional)
 
