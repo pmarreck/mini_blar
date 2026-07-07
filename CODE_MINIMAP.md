@@ -56,7 +56,11 @@ container with `COMP=zstd`, `DECOMP_LEN`, and `CSUM=xxhash64` over stored
 bytes (verify-before-decompress); `decompressContainer` mirrors it. Any
 non-zstd comp_id → `error.UnsupportedCompression`. Level is comptime from
 `-Dzstd_level` (default 19). Depends on vendored `zstdz` (zig-pkg/), pinned
-≥0a478bb for the `-Dcpu=baseline` ISA fix.
+≥0a478bb for the `-Dcpu=baseline` ISA fix. MT policy: inputs ≥
+`MT_INPUT_THRESHOLD` (8 MB) always take zstd's MT path with
+`min(num_threads, MT_MAX_WORKERS=8)` workers and pinned `MT_JOB_SIZE`
+(8 MB); smaller inputs always single-thread. Path is size-selected (never
+thread-selected) so bytes are independent of num_threads — test-enforced.
 
 ## src/miniblar.c
 

@@ -119,7 +119,7 @@ pub const MAGIC_MBAR: *const [5]u8 = "MBAR\x02";
 ///   [1]: DATA — content bytes
 ///   [2]: DICT — forks (optional, only if xattrs or resource fork present)
 /// Caller owns returned memory.
-pub fn serializeFileEntry(allocator: Allocator, file: FileEntry, to_free: *std.ArrayList([]u8), comp_id: ?ct.CompressionId, compress_progress_fn: compression_mod.CompressProgressFn, compress_progress_ctx: ?*anyopaque) (Allocator.Error || ContainerError || compression_mod.CompressionError)![]const u8 {
+pub fn serializeFileEntry(allocator: Allocator, file: FileEntry, to_free: *std.ArrayList([]u8), comp_id: ?ct.CompressionId, compress_progress_fn: compression_mod.CompressProgressFn, compress_progress_ctx: ?*anyopaque, num_threads: u8) (Allocator.Error || ContainerError || compression_mod.CompressionError)![]const u8 {
     // --- Element 0: metadata DICT ---
     // Build metadata key-value pairs with 2-char keys in canonical order:
     // bt < ct < gi < gn < md < mt < pa < ui < un < zc
@@ -288,7 +288,7 @@ pub fn serializeFileEntry(allocator: Allocator, file: FileEntry, to_free: *std.A
         const raw = try leaf.serializeDataWithOptions(allocator, file.content, .{ .csum_id = .xxhash64 });
         if (comp_id != null and !skip_compression) {
             defer allocator.free(raw);
-            break :blk compression_mod.compressContainer(allocator, comp_id.?, raw, compress_progress_fn, null, compress_progress_ctx, 1) catch |e| switch (e) {
+            break :blk compression_mod.compressContainer(allocator, comp_id.?, raw, compress_progress_fn, null, compress_progress_ctx, num_threads) catch |e| switch (e) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.CompressionFailed => return error.CompressionFailed,
                 error.UnsupportedCompression => return error.UnsupportedCompression,
@@ -532,7 +532,7 @@ pub fn createArchive(allocator: Allocator, files: []const FileEntry) (Allocator.
     defer file_elements.deinit(allocator);
 
     for (files) |file| {
-        const file_bytes = try serializeFileEntry(allocator, file, &to_free, null, null, null);
+        const file_bytes = try serializeFileEntry(allocator, file, &to_free, null, null, null, 1);
         try file_elements.append(allocator, file_bytes);
     }
 
@@ -616,6 +616,11 @@ pub fn createFullArchive(
         (std.Thread.getCpuCount() catch 1)
     else
         @intCast(num_threads);
+    // Per-entry zstd worker budget (perf-only knob — archive bytes never
+    // depend on it; see compression module's size-selected path invariant).
+    // Big entries get zstd-MT within a worker; the module caps at
+    // MT_MAX_WORKERS, so pool×zstd oversubscription is bounded.
+    const zstd_thread_budget: u8 = @intCast(@min(resolved_threads, 255));
 
     if (resolved_threads > 1 and file_count > 1 and comp_id != null) {
         // Parallel path: serialize files concurrently using thread pool
@@ -677,6 +682,7 @@ pub fn createFullArchive(
             entries_ptr: []const ArchiveEntry,
             file_slots_ptr: []const usize,
             cid: ?ct.CompressionId,
+            zstd_threads: u8,
             file_results_ptr: []FileResult,
             a_files: *std.atomic.Value(u64),
             a_bytes: *std.atomic.Value(u64),
@@ -694,7 +700,7 @@ pub fn createFullArchive(
                     const result = &ctx.file_results_ptr[slot];
 
                     var local_to_free: std.ArrayList([]u8) = .empty;
-                    const file_bytes = serializeFileEntry(ctx.alloc, file, &local_to_free, ctx.cid, null, null) catch |e| {
+                    const file_bytes = serializeFileEntry(ctx.alloc, file, &local_to_free, ctx.cid, null, null, ctx.zstd_threads) catch |e| {
                         result.err = e;
                         for (local_to_free.items) |item| ctx.alloc.free(item);
                         local_to_free.deinit(ctx.alloc);
@@ -733,6 +739,7 @@ pub fn createFullArchive(
                     .entries_ptr = entries,
                     .file_slots_ptr = file_slots,
                     .cid = comp_id,
+                    .zstd_threads = zstd_thread_budget,
                     .file_results_ptr = file_results,
                     .a_files = &atomic_files_done,
                     .a_bytes = &atomic_bytes_done,
@@ -801,7 +808,7 @@ pub fn createFullArchive(
                         @ptrCast(progress_fn)
                     else
                         null;
-                    const file_bytes = try serializeFileEntry(allocator, file, &to_free, comp_id, compress_cb, progress_ctx);
+                    const file_bytes = try serializeFileEntry(allocator, file, &to_free, comp_id, compress_cb, progress_ctx, zstd_thread_budget);
                     entry_elements.items[i] = file_bytes;
                     const file_view = try container.parseLPHeader(file_bytes);
                     const csum = file_view.checksumSlice();
@@ -1584,7 +1591,7 @@ test "Merkle hash uses per-file xxHash64 from FILE ARRAY container" {
         to_free.deinit(allocator);
     }
 
-    const file_bytes = try serializeFileEntry(allocator, file, &to_free, null, null, null);
+    const file_bytes = try serializeFileEntry(allocator, file, &to_free, null, null, null, 1);
 
     // Parse the FILE ARRAY header to extract its xxHash64 checksum
     const file_view = try container_mod.parseLPHeader(file_bytes);

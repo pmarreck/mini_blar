@@ -45,12 +45,17 @@ zig build -Denable_compression=true -Dzstd_level=22   # override level (default 
 - The zstd level is baked at build time (compress once at build, decompress
   on every launch → bias for ratio; zstd decompress speed is
   ~level-independent).
+- **Multithreaded compression:** entries ≥ 8 MB are compressed with zstd's
+  built-in MT (`nbWorkers = min(num_threads, 8)`, pinned 8 MB job size), so
+  a large entry parallelizes internally (~len/8MB-way; measured 4.1× on a
+  36 MB entry at level 19 with 8 workers). `createFullArchive`'s
+  `num_threads` both sizes the across-entries pool and budgets per-entry
+  zstd workers. Entries < 8 MB always use the single-thread path — no MT
+  overhead for small files.
 - **Reproducibility:** archive bytes are deterministic and independent of
-  `num_threads` (test-verified: `num_threads = 1` and `= 8` produce
-  byte-identical archives). Per-entry zstd always runs single-threaded
-  internally — `createFullArchive`'s `num_threads` only parallelizes
-  *across* entries into order-fixed slots. Upstream zstd MT output is
-  likewise deterministic and thread-count-independent
+  `num_threads` (test-enforced). The compression path is selected by
+  **input size only** — never by thread count — and zstd's MT output is
+  itself deterministic and thread-count-independent
   ([zstd#2079](https://github.com/facebook/zstd/issues/2079)). What *does*
   change archive bytes: the zstd **version** and the **level** — both
   already pinned here (vendored zstdz, comptime `-Dzstd_level`), so a

@@ -31,6 +31,21 @@ const ZSTD_LEVEL: u8 = build_options.zstd_level;
 /// Streaming chunk size for progress reporting on large inputs.
 const CHUNK_SIZE: usize = 4 * 1024 * 1024;
 
+/// Inputs at or above this size always take zstd's multithreaded path;
+/// smaller inputs always take the single-thread path. Path choice is by
+/// INPUT SIZE ONLY — never by thread count — so output bytes remain a pure
+/// function of (input, zstd version, level): reproducible across machines
+/// and num_threads settings (MT output is thread-count-independent, zstd#2079).
+pub const MT_INPUT_THRESHOLD: usize = 8 * 1024 * 1024;
+
+/// Ceiling on zstd worker threads per input (approved cap: 8).
+pub const MT_MAX_WORKERS: u8 = 8;
+
+/// Pinned zstd job size for the MT path. Pinning it (a) fixes internal input
+/// splitting against upstream default drift (reproducibility), and (b) yields
+/// ~len/8MB-way parallelism on big entries (e.g. a 93 MB entry → ~12 jobs).
+pub const MT_JOB_SIZE: usize = 8 * 1024 * 1024;
+
 pub const CompressionError = error{
     UnsupportedCompression,
     OutOfMemory,
@@ -52,7 +67,11 @@ pub fn isCompressed(buf: []const u8) bool {
 
 /// Compress raw bytes with zstd at the build-configured level.
 /// Streams in 4 MB chunks so progress_fn gets called on large inputs.
-/// num_threads: 0=auto, 1=single-threaded, N=request N zstd workers.
+/// num_threads is a PERF knob only (0=auto): inputs >= MT_INPUT_THRESHOLD
+/// take the MT path with min(num_threads, MT_MAX_WORKERS) workers and a
+/// pinned job size; smaller inputs take the single-thread path regardless.
+/// Output bytes never depend on num_threads (size-selected path +
+/// thread-count-independent MT output, zstd#2079 — test-enforced).
 /// Caller owns returned memory.
 fn compress(
     allocator: Allocator,
@@ -71,13 +90,15 @@ fn compress(
     defer _ = zstd.ZSTD_freeCCtx(cctx);
 
     _ = zstd.ZSTD_CCtx_setParameter(cctx, zstd.ZSTD_c_compressionLevel, ZSTD_LEVEL);
-    if (num_threads != 1) {
-        const resolved: c_int = if (num_threads == 0)
-            @intCast(std.Thread.getCpuCount() catch 1)
+    if (data.len >= MT_INPUT_THRESHOLD) {
+        const requested: usize = if (num_threads == 0)
+            std.Thread.getCpuCount() catch 1
         else
-            @intCast(num_threads);
-        // Best-effort: a no-op if libzstd was built without ZSTD_MULTITHREAD.
-        _ = zstd.ZSTD_CCtx_setParameter(cctx, zstd.ZSTD_c_nbWorkers, resolved);
+            num_threads;
+        const workers: c_int = @intCast(@max(1, @min(requested, MT_MAX_WORKERS)));
+        // Best-effort: no-ops if libzstd was built without ZSTD_MULTITHREAD.
+        _ = zstd.ZSTD_CCtx_setParameter(cctx, zstd.ZSTD_c_nbWorkers, workers);
+        _ = zstd.ZSTD_CCtx_setParameter(cctx, zstd.ZSTD_c_jobSize, @intCast(MT_JOB_SIZE));
     }
 
     if (data.len <= CHUNK_SIZE) {
@@ -262,19 +283,33 @@ test "decompressContainer rejects non-compressed container" {
     try testing.expectError(error.InvalidContainerType, decompressContainer(allocator, plain));
 }
 
+/// Deterministic 50%-compressible test data (alternating 256-byte pattern
+/// and LCG-noise blocks) — realistic enough that different compression
+/// paths would plausibly emit different streams, unlike pure-pattern data.
+fn fillCompressible(buf: []u8, seed: u64) void {
+    var state = seed;
+    for (buf, 0..) |*b, i| {
+        if ((i / 256) % 2 == 0) {
+            b.* = @intCast(i % 251);
+        } else {
+            state = state *% 6364136223846793005 +% 1442695040888963407;
+            b.* = @intCast(state >> 56);
+        }
+    }
+}
+
 test "MT path (num_threads>=2) output is deterministic run-to-run" {
     // Upstream guarantee (zstd author, facebook/zstd#2079): for a fixed
     // version + params, MT compression output is byte-identical run to run.
-    // This is a regression tripwire for zstdz bumps. Envelope note: at our
-    // comptime level the input may fit one internal MT job; the guarantee
-    // (and this test) still covers our actual usage.
+    // Sized above MT_INPUT_THRESHOLD (and > MT_JOB_SIZE → multi-job) so the
+    // genuine multithreaded machinery is exercised.
     const allocator = testing.allocator;
     const leaf = blip.leaf_mod;
 
-    const raw_len: usize = 6 * 1024 * 1024; // > CHUNK_SIZE: exercises streaming path
+    const raw_len: usize = MT_INPUT_THRESHOLD + 1024 * 1024;
     const raw = try allocator.alloc(u8, raw_len);
     defer allocator.free(raw);
-    for (raw, 0..) |*b, i| b.* = @intCast((i / 512) % 253);
+    fillCompressible(raw, 0xDEADBEEF);
 
     const inner = try leaf.serializeData(allocator, raw);
     defer allocator.free(inner);
@@ -300,10 +335,10 @@ test "MT output is thread-count independent (zstd#2079)" {
     const allocator = testing.allocator;
     const leaf = blip.leaf_mod;
 
-    const raw_len: usize = 6 * 1024 * 1024;
+    const raw_len: usize = MT_INPUT_THRESHOLD + 1024 * 1024;
     const raw = try allocator.alloc(u8, raw_len);
     defer allocator.free(raw);
-    for (raw, 0..) |*b, i| b.* = @intCast((i / 512) % 253);
+    fillCompressible(raw, 0xDEADBEEF);
 
     const inner = try leaf.serializeData(allocator, raw);
     defer allocator.free(inner);
@@ -317,6 +352,56 @@ test "MT output is thread-count independent (zstd#2079)" {
 
     try testing.expectEqualSlices(u8, c_2, c_8);
     try testing.expectEqualSlices(u8, c_2, c_auto);
+}
+
+test "compression path is size-selected: bytes independent of num_threads" {
+    // The invariant that lets consumers bless a hash without pinning threads:
+    // inputs >= MT_INPUT_THRESHOLD ALWAYS take the MT path (even at
+    // num_threads=1 → nbWorkers=1, thread-count-independent bytes), and
+    // smaller inputs ALWAYS take the single-thread path (even at
+    // num_threads=8). Path is a function of input size only, so
+    // (input, version, level) fully determine the output bytes.
+    const allocator = testing.allocator;
+    const leaf = blip.leaf_mod;
+
+    // big input: num_threads 1 / 8 / 0 must all agree
+    {
+        const raw_len: usize = MT_INPUT_THRESHOLD + 1024 * 1024;
+        const raw = try allocator.alloc(u8, raw_len);
+        defer allocator.free(raw);
+        fillCompressible(raw, 0xC0FFEE);
+
+        const inner = try leaf.serializeData(allocator, raw);
+        defer allocator.free(inner);
+
+        const c_1 = try compressContainer(allocator, .zstd, inner, null, null, null, 1);
+        defer allocator.free(c_1);
+        const c_8 = try compressContainer(allocator, .zstd, inner, null, null, null, 8);
+        defer allocator.free(c_8);
+        const c_auto = try compressContainer(allocator, .zstd, inner, null, null, null, 0);
+        defer allocator.free(c_auto);
+
+        try testing.expectEqualSlices(u8, c_1, c_8);
+        try testing.expectEqualSlices(u8, c_1, c_auto);
+    }
+
+    // small input: single-thread path regardless of requested threads
+    {
+        const raw_len: usize = 64 * 1024;
+        const raw = try allocator.alloc(u8, raw_len);
+        defer allocator.free(raw);
+        fillCompressible(raw, 0xBADC0DE);
+
+        const inner = try leaf.serializeData(allocator, raw);
+        defer allocator.free(inner);
+
+        const s_1 = try compressContainer(allocator, .zstd, inner, null, null, null, 1);
+        defer allocator.free(s_1);
+        const s_8 = try compressContainer(allocator, .zstd, inner, null, null, null, 8);
+        defer allocator.free(s_8);
+
+        try testing.expectEqualSlices(u8, s_1, s_8);
+    }
 }
 
 test "decompressContainer verifies checksum and rejects corruption" {

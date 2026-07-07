@@ -23,6 +23,17 @@ dispatch; default build keeps the no-op stub → zero codecs linked).
 - [x] Push, Garnix green 5/5 (incl. new `test-compression` check) (2026-07-06 ~3:05 PM EST)
 - [x] Reply to validate_gui (LLMsend note + ping; local session — "thelio-pm" == this box) (2026-07-06 ~3:10 PM EST)
 
+## Per-entry MT zstd (Peter + validate_gui request, 2026-07-07)
+
+- [x] Enable zstd nbWorkers on the per-entry path: entries ≥8 MB take the MT
+      path with min(num_threads, 8) workers + pinned 8 MB jobSize; <8 MB
+      always single-thread. Path selected by SIZE only → bytes independent
+      of num_threads (invariant test held before AND after — zstd 1.6.0
+      emits identical ST/MT-path bytes for our params, so archives are
+      byte-identical to the previous rev). Probe: 36 MB level-19 15.0s → 3.65s
+      (4.11×). serializeFileEntry gained a num_threads param. (2026-07-07 ~1:55 PM EST)
+- [ ] Push, CI green, notify validate_gui (expect their 12.1s pack → ~3-4s)
+
 ## Backlog (optional)
 
 - [ ] Bump blip dep v3.1.0 → v3.2.0: free `DictReader.findKey` O(n log n)
