@@ -6,6 +6,23 @@ maintained_by: agent
 
 # Mistakes
 
+## 2026-07-07 — amplified an unverified consumer claim into the README
+
+validate_gui's reply asserted "multi-thread zstd makes the archive bytes
+non-deterministic build-to-build"; I documented it as a README caveat without
+verifying. Einstein challenged it with primary sources (zstd#2079: MT output
+is deterministic AND thread-count-independent by design; the historical
+nondeterminism bugs #1077/#2327 were fixed by v1.4.7; we vendor v1.6.0), and
+a local experiment refuted it: num_threads 2/8/auto produce byte-identical
+output, and threads=1 vs threads=8 archives are byte-identical (per-entry
+zstd is always single-threaded here anyway — serializeFileEntry pins it).
+Now encoded as three permanent regression tests. Lessons:
+1. **Negative capability claims ("X is nondeterministic") get a repro before
+   they get documented** — they're cheap to test and expensive to spread.
+2. The consumer who reports a property of YOUR system is still a producer of
+   claims — maker≠checker applies to documentation too.
+3. When correcting, encode the corrected belief as a test, not just prose.
+
 ## 2026-07-06 — stub/real module signature drift caused unreachable-else
 
 Added an `error.UnsupportedCompression` arm to `serializeFileEntry`'s

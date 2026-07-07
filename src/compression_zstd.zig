@@ -262,6 +262,63 @@ test "decompressContainer rejects non-compressed container" {
     try testing.expectError(error.InvalidContainerType, decompressContainer(allocator, plain));
 }
 
+test "MT path (num_threads>=2) output is deterministic run-to-run" {
+    // Upstream guarantee (zstd author, facebook/zstd#2079): for a fixed
+    // version + params, MT compression output is byte-identical run to run.
+    // This is a regression tripwire for zstdz bumps. Envelope note: at our
+    // comptime level the input may fit one internal MT job; the guarantee
+    // (and this test) still covers our actual usage.
+    const allocator = testing.allocator;
+    const leaf = blip.leaf_mod;
+
+    const raw_len: usize = 6 * 1024 * 1024; // > CHUNK_SIZE: exercises streaming path
+    const raw = try allocator.alloc(u8, raw_len);
+    defer allocator.free(raw);
+    for (raw, 0..) |*b, i| b.* = @intCast((i / 512) % 253);
+
+    const inner = try leaf.serializeData(allocator, raw);
+    defer allocator.free(inner);
+
+    const c_first = try compressContainer(allocator, .zstd, inner, null, null, null, 8);
+    defer allocator.free(c_first);
+    const c_second = try compressContainer(allocator, .zstd, inner, null, null, null, 8);
+    defer allocator.free(c_second);
+
+    try testing.expectEqualSlices(u8, c_first, c_second);
+
+    // and the MT path round-trips
+    const back = try decompressContainer(allocator, c_first);
+    defer allocator.free(back);
+    try testing.expectEqualSlices(u8, inner, back);
+}
+
+test "MT output is thread-count independent (zstd#2079)" {
+    // "the nb of compression threads can be anything, from 1 to N, and the
+    // outcome will nonetheless remain exactly identical" — Yann Collet.
+    // num_threads=0 (auto-detect) must also match: reproducibility across
+    // machines with different core counts depends on it.
+    const allocator = testing.allocator;
+    const leaf = blip.leaf_mod;
+
+    const raw_len: usize = 6 * 1024 * 1024;
+    const raw = try allocator.alloc(u8, raw_len);
+    defer allocator.free(raw);
+    for (raw, 0..) |*b, i| b.* = @intCast((i / 512) % 253);
+
+    const inner = try leaf.serializeData(allocator, raw);
+    defer allocator.free(inner);
+
+    const c_2 = try compressContainer(allocator, .zstd, inner, null, null, null, 2);
+    defer allocator.free(c_2);
+    const c_8 = try compressContainer(allocator, .zstd, inner, null, null, null, 8);
+    defer allocator.free(c_8);
+    const c_auto = try compressContainer(allocator, .zstd, inner, null, null, null, 0);
+    defer allocator.free(c_auto);
+
+    try testing.expectEqualSlices(u8, c_2, c_8);
+    try testing.expectEqualSlices(u8, c_2, c_auto);
+}
+
 test "decompressContainer verifies checksum and rejects corruption" {
     const allocator = testing.allocator;
     const leaf = blip.leaf_mod;

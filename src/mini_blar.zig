@@ -1730,6 +1730,45 @@ test "per-file compression: zstd round-trips large multi-chunk content" {
     try testing.expectEqualSlices(u8, big, content);
 }
 
+test "per-file compression: archive bytes are deterministic and independent of num_threads" {
+    // Refutes the "MT makes archive bytes nondeterministic" assumption
+    // (validate_gui, 2026-07-06; challenged by Einstein with zstd#2079).
+    // Two reasons it can't happen here: (1) per-entry zstd always runs with
+    // num_threads=1 (serializeFileEntry pins it — createFullArchive's
+    // num_threads only sizes the ACROSS-entries pool), and (2) parallel
+    // workers write into order-fixed slots, so assembly order is stable.
+    // Blessed-hash consumers may hash the archive without pinning threads;
+    // the real reproducibility variable is the zstd VERSION + level.
+    if (comptime !build_options.enable_compression) return;
+    const allocator = testing.allocator;
+
+    const big_len: usize = 1536 * 1024;
+    const big_a = try allocator.alloc(u8, big_len);
+    defer allocator.free(big_a);
+    const big_b = try allocator.alloc(u8, big_len);
+    defer allocator.free(big_b);
+    for (big_a, 0..) |*byte, i| byte.* = @intCast((i / 256) % 251);
+    for (big_b, 0..) |*byte, i| byte.* = @intCast((i / 384) % 241);
+
+    const entries = [_]ArchiveEntry{
+        .{ .file = .{ .path = "a.bin", .content = big_a } },
+        .{ .file = .{ .path = "b.bin", .content = big_b } },
+        .{ .file = .{ .path = "c.txt", .content = "small deterministic tail" } },
+    };
+
+    const archive_seq = try createFullArchive(allocator, &entries, null, null, null, .zstd, 1);
+    defer allocator.free(archive_seq);
+    const archive_par1 = try createFullArchive(allocator, &entries, null, null, null, .zstd, 8);
+    defer allocator.free(archive_par1);
+    const archive_par2 = try createFullArchive(allocator, &entries, null, null, null, .zstd, 8);
+    defer allocator.free(archive_par2);
+
+    // run-to-run determinism of the parallel path
+    try testing.expectEqualSlices(u8, archive_par1, archive_par2);
+    // ...and byte-equality with the sequential path
+    try testing.expectEqualSlices(u8, archive_seq, archive_par1);
+}
+
 test "per-file compression: corrupting stored bytes is caught before decompress" {
     if (comptime !build_options.enable_compression) return;
     const allocator = testing.allocator;
