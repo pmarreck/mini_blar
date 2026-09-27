@@ -4,6 +4,7 @@ Completed history: [docs/PLAN_LOG.md](docs/PLAN_LOG.md). Compression context and
 
 ## Branch reconciliation
 
+- [x] Add Mechatron targets and README badge after e76a6c9 exposed the missing manifest; the existing Linux package and both test profiles passed direct Nix builds (done 2026-09-27 16:19 EDT).
 - [x] Restore checkout to yolo and commit staged documentation links; fetched origin/yolo matched ca14739, latest jj snapshots were identical, and the xattr branch was already merged; nix develop -c ./test and ./build passed (afc35b6; done 2026-09-27 16:15 EDT).
 
 ## Optional zstd compression (validate_gui launcher request, 2026-07-06)

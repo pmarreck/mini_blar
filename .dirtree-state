@@ -1,6 +1,7 @@
 # Dirtree: Stateful directory trees in the CLI for humans and LLMs. https://github.com/pmarreck/dirtree
 ver=1.2
 annotate=[
+	.mechatron-prime/targets = Exact-commit CI package and test targets for Thelio
 	docs/PLAN_LOG.md = Completed work retired from PLAN.md
 	docs/plan_context/compression.md = Compression request and stable consumer interface contract
 	src/compression_stub.zig = No-op compression stub (default profile) — signature twin of compression_zstd.zig, zero codecs linked
