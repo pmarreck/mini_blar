@@ -5,16 +5,15 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .blip = .{
-            .url = "https://github.com/pmarreck/BLIP/archive/refs/tags/v3.1.0.tar.gz",
-            .hash = "blip-0.1.0-rcNuGOSZBwBX-Q-IYY7LA5enIHtkIUZetkSenD40cRH8",
+            .url = "https://github.com/pmarreck/BLIP/archive/5128c62aca5f07301c0a63e716f2a3235421ecee.tar.gz",
+            .hash = "blip-0.1.0-rcNuGKNnCAAFg3adS7Roo6GOnNI4w8DS26xCvxrMO-vH",
         },
         // zstd codec for -Denable_compression=true builds. Lazy: never fetched
-        // for the default (stub) profile. Pinned ≥0a478bb — that rev adds
-        // -Dcpu=baseline + an ISA-baseline check so Garnix-cached artifacts
-        // don't ship AVX-512 code that SIGILLs on non-AVX-512 hosts (Zen 2).
+        // for the default (stub) profile. Build with -Dcpu=baseline so
+        // cached artifacts run on CPUs without optional ISA extensions.
         .zstdz = .{
-            .url = "https://github.com/pmarreck/zstdz/archive/46a916ab3bb24c2298f1559a1b36691caab53ffa.tar.gz",
-            .hash = "zstdz-1.6.0-yDWjzjJvNADuXVquo1ire6azJM7pPcP-DIqOXWGsLr6G",
+            .url = "https://github.com/pmarreck/zstdz/archive/484cc81791e44d22f459054aedd3ec53dbb20174.tar.gz",
+            .hash = "zstdz-1.6.0-yDWjzq-MNAA4J6TsElJhZ6r2bA0csYbReJoPx8NhdL8g",
             .lazy = true,
         },
     },

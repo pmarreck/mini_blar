@@ -71,6 +71,15 @@ zig build -Denable_compression=true -Dzstd_level=22   # override level (default 
 ./test          # run unit + CLI tests
 ```
 
+Dependency revisions and package hashes live in `build.zig.zon` and
+`flake.lock`; `zig-pkg/` contains the matching upstream package contents for
+offline builds. GitHub Actions also use immutable commit pins.
+
+Dependency refreshes target upstream HEAD. The toolchain stays on the latest
+Zig 0.16 patch release until the coordinated compiler migration. Nixpkgs
+tracks `nixpkgs-unstable`, with a seven-day freshness allowance. Dependencies
+that require a newer Zig series must be reported as waiting on that migration.
+
 ## Relationship to blar and BLIP
 
 ```

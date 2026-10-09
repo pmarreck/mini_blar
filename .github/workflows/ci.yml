@@ -10,11 +10,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
 
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/nix-installer-action@2cb76beab460be7e44442c7ebdcbc30b638416df
 
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@f69a2d3e148e90223fe63ab6e3f6331f2e7e33dc
 
       - name: Build
         run: nix build

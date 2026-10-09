@@ -2,26 +2,23 @@
   description = "mini_blar: constrained subset of the BLAR archive format";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     zig-overlay = {
       url = "github:mitchellh/zig-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
-    };
-    blip = {
-      url = "github:pmarreck/BLIP/v3.0.0";
-      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.systems.follows = "flake-utils/systems";
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, zig-overlay, blip, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs = { self, nixpkgs, flake-utils, zig-overlay, ... }:
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
         zig = zig-overlay.packages.${system}."0.16.0";
         pname = "mini_blar";
         version = "3.0.0";
-        isDarwin = pkgs.stdenv.isDarwin;
+        isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
 
         # No zigDeps fixed-output derivation here (unlike the fleet-standard
         # Strategy 1): ALL Zig deps (blip, zstdz) are vendored in-tree under
@@ -92,7 +89,7 @@
         # FileNotFound). Musl makes it fully static; no patchelf dance needed
         # (cf. zstdz@2110c2c which solved the same problem the other way).
         checks.test-compression = let
-          muslFlag = pkgs.lib.optionalString pkgs.stdenv.isLinux
+          muslFlag = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux
             "-Dtarget=${pkgs.stdenv.hostPlatform.parsed.cpu.name}-linux-musl";
         in pkgs.stdenv.mkDerivation {
           pname = "${pname}-tests-compression";

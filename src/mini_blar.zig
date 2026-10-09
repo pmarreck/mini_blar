@@ -912,7 +912,7 @@ pub const ArchiveReader = struct {
     /// Accepts both BLAR (full) and MBAR (miniblar) magic.
     pub fn verifyMagic(self: ArchiveReader) ContainerError!bool {
         if (self.outer.elementCount() < 1) return false;
-        const view = try self.outer.elementAt(0);
+        const view = try self.outer.containerAt(0);
         if (view.type_id != .data) return false;
         const value = view.payloadSlice();
         return std.mem.eql(u8, value, MAGIC_BLAR) or std.mem.eql(u8, value, MAGIC_MBAR);
@@ -921,7 +921,7 @@ pub const ArchiveReader = struct {
     /// Check if this archive has full blar magic (BLAR).
     pub fn isBlar(self: ArchiveReader) ContainerError!bool {
         if (self.outer.elementCount() < 1) return false;
-        const view = try self.outer.elementAt(0);
+        const view = try self.outer.containerAt(0);
         if (view.type_id != .data) return false;
         return std.mem.eql(u8, view.payloadSlice(), MAGIC_BLAR);
     }
@@ -929,7 +929,7 @@ pub const ArchiveReader = struct {
     /// Check if this archive has miniblar magic (MBAR).
     pub fn isMiniblar(self: ArchiveReader) ContainerError!bool {
         if (self.outer.elementCount() < 1) return false;
-        const view = try self.outer.elementAt(0);
+        const view = try self.outer.containerAt(0);
         if (view.type_id != .data) return false;
         return std.mem.eql(u8, view.payloadSlice(), MAGIC_MBAR);
     }
@@ -937,7 +937,7 @@ pub const ArchiveReader = struct {
     /// Returns the number of entries in the archive.
     pub fn entryCount(self: ArchiveReader) ContainerError!u64 {
         if (self.outer.elementCount() < 2) return 0;
-        const body_view = try self.outer.elementAt(1);
+        const body_view = try self.outer.containerAt(1);
         const body_reader = try array_mod.ArrayReader.init(body_view.buf);
         return body_reader.elementCount();
     }
@@ -949,19 +949,19 @@ pub const ArchiveReader = struct {
 
     /// Get the container type of an entry at the given index.
     pub fn entryTypeAt(self: ArchiveReader, index: u64) ContainerError!ct.ContainerTypeId {
-        const body_view = try self.outer.elementAt(1);
+        const body_view = try self.outer.containerAt(1);
         const body_reader = try array_mod.ArrayReader.init(body_view.buf);
 
-        const entry_view = try body_reader.elementAt(index);
+        const entry_view = try body_reader.containerAt(index);
         return entry_view.type_id;
     }
 
     /// Get raw bytes of the entry at the given index.
     fn entryBufAt(self: ArchiveReader, index: u64) ContainerError![]const u8 {
-        const body_view = try self.outer.elementAt(1);
+        const body_view = try self.outer.containerAt(1);
         const body_reader = try array_mod.ArrayReader.init(body_view.buf);
 
-        const entry_view = try body_reader.elementAt(index);
+        const entry_view = try body_reader.containerAt(index);
         return entry_view.buf;
     }
 
@@ -994,7 +994,7 @@ pub const ArchiveReader = struct {
         if (entry_type == .file) {
             // FILE: ARRAY[0] is metadata DICT, look for "pa" key
             const arr = try self.fileArrayAt(index);
-            const meta_view = try arr.elementAt(0);
+            const meta_view = try arr.containerAt(0);
             const meta_reader = try dict_mod.DictReader.init(meta_view.buf);
             const pa_idx = (try meta_reader.findKey("pa")) orelse return ContainerError.MissingRequiredKey;
             const pa_container = try meta_reader.valueAt(pa_idx);
@@ -1013,7 +1013,7 @@ pub const ArchiveReader = struct {
     /// For uncompressed entries, returns a zero-copy slice into the archive buffer.
     pub fn fileContentAt(self: ArchiveReader, index: u64) ContainerError![]const u8 {
         const arr = try self.fileArrayAt(index);
-        const data_view = try arr.elementAt(1);
+        const data_view = try arr.containerAt(1);
         return leaf.readData(data_view.buf);
     }
 
@@ -1024,7 +1024,7 @@ pub const ArchiveReader = struct {
     /// Caller owns returned memory and must free it.
     pub fn fileContentDecompress(self: ArchiveReader, index: u64, allocator: Allocator) ![]u8 {
         const arr = try self.fileArrayAt(index);
-        const data_view = try arr.elementAt(1);
+        const data_view = try arr.containerAt(1);
 
         // Check if the element has a COMP attribute (per-file compressed)
         if (data_view.comp_id != null) {
@@ -1061,7 +1061,7 @@ pub const ArchiveReader = struct {
         if (!arr_ok) return false;
 
         // Verify the DATA container's embedded checksum
-        const data_view = try arr.elementAt(1);
+        const data_view = try arr.containerAt(1);
         return leaf.verifyLeafChecksum(data_view.buf);
     }
 
@@ -1146,7 +1146,7 @@ pub const ArchiveReader = struct {
         const entry_type = try self.entryTypeAt(index);
         const meta_reader = if (entry_type == .file) blk: {
             const arr = try self.fileArrayAt(index);
-            const meta_view = try arr.elementAt(0);
+            const meta_view = try arr.containerAt(0);
             break :blk try dict_mod.DictReader.init(meta_view.buf);
         } else try self.dirDictAt(index);
 
@@ -1376,7 +1376,7 @@ test "FILE metadata round-trip: mode, mtime, username" {
     const arr = try reader.fileArrayAt(0);
 
     // Element 0 is metadata DICT
-    const meta_view = try arr.elementAt(0);
+    const meta_view = try arr.containerAt(0);
     try testing.expectEqual(ContainerTypeId.dict, meta_view.type_id);
 
     // Parse metadata dict
@@ -1458,7 +1458,7 @@ test "FILE with xattrs creates forks DICT" {
     try testing.expectEqual(@as(u64, 3), arr.elementCount());
 
     // Element 2 should be a DICT
-    const forks_view = try arr.elementAt(2);
+    const forks_view = try arr.containerAt(2);
     try testing.expectEqual(ContainerTypeId.dict, forks_view.type_id);
 }
 
@@ -1486,7 +1486,7 @@ test "DATA container inside FILE has xxHash64 checksum" {
     const arr = try reader.fileArrayAt(0);
 
     // Element 1 is the DATA container — it should have xxHash64 checksum
-    const data_view = try arr.elementAt(1);
+    const data_view = try arr.containerAt(1);
     try testing.expectEqual(ContainerTypeId.data, data_view.type_id);
     try testing.expectEqual(@as(?ct.ChecksumId, .xxhash64), data_view.csum_id);
     try testing.expectEqual(@as(usize, 8), data_view.checksumSlice().len);
@@ -1506,9 +1506,9 @@ test "FILE ARRAY container has xxHash64 checksum" {
     const reader = try ArchiveReader.init(archive);
 
     // Get the raw FILE container from the body array
-    const body_view = try reader.outer.elementAt(1);
+    const body_view = try reader.outer.containerAt(1);
     const body_reader = try array_mod.ArrayReader.init(body_view.buf);
-    const file_view = try body_reader.elementAt(0);
+    const file_view = try body_reader.containerAt(0);
 
     // FILE ARRAY should have xxHash64 checksum attribute
     try testing.expectEqual(@as(?ct.ChecksumId, .xxhash64), file_view.csum_id);
@@ -1532,9 +1532,9 @@ test "DIR container has xxHash64 checksum" {
     const reader = try ArchiveReader.init(archive);
 
     // Get the raw DIR container
-    const body_view = try reader.outer.elementAt(1);
+    const body_view = try reader.outer.containerAt(1);
     const body_reader = try array_mod.ArrayReader.init(body_view.buf);
-    const dir_view = try body_reader.elementAt(0);
+    const dir_view = try body_reader.containerAt(0);
 
     // DIR should have xxHash64 checksum
     try testing.expectEqual(ContainerTypeId.dir, dir_view.type_id);
@@ -1565,7 +1565,7 @@ test "verifyFileAt detects single-file corruption in multi-file archive" {
     // Corrupt file 1's content (find the DATA container for b.txt and flip a byte)
     // The FILE ARRAY's xxHash64 should now fail for file 1
     const arr1 = try reader.fileArrayAt(1);
-    const data1_view = try arr1.elementAt(1);
+    const data1_view = try arr1.containerAt(1);
     // data1_view.buf points into the archive buffer
     const data1_start = @intFromPtr(data1_view.buf.ptr) - @intFromPtr(archive.ptr);
     // Corrupt a payload byte in the DATA container
@@ -1636,7 +1636,7 @@ test "per-file compression: createFullArchive with comp_id produces recoverable 
     // carrying the profile's checksum (xxhash64 — NOT blake3) over the
     // stored/compressed bytes so verifyFileAt works before decompression.
     const arr0 = try reader.fileArrayAt(0);
-    const data_view0 = try arr0.elementAt(1);
+    const data_view0 = try arr0.containerAt(1);
     try testing.expectEqual(@as(?ct.CompressionId, .zstd), data_view0.comp_id);
     try testing.expectEqual(@as(?ct.ChecksumId, .xxhash64), data_view0.csum_id);
 
@@ -1669,7 +1669,7 @@ test "fileContentDecompress works on uncompressed archives" {
 
     // Element [1] should NOT be compressed
     const arr = try reader.fileArrayAt(0);
-    const data_view = try arr.elementAt(1);
+    const data_view = try arr.containerAt(1);
     try testing.expectEqual(@as(?ct.CompressionId, null), data_view.comp_id);
 
     // fileContentDecompress should still work (returns a copy)
@@ -1793,7 +1793,7 @@ test "per-file compression: corrupting stored bytes is caught before decompress"
     // Locate the compressed LP (element [1] of FILE [0]) and flip a byte in
     // its middle — inside the stored/compressed payload, away from headers.
     const arr = try reader.fileArrayAt(0);
-    const data_view = try arr.elementAt(1);
+    const data_view = try arr.containerAt(1);
     const lp_start = @intFromPtr(data_view.buf.ptr) - @intFromPtr(archive.ptr);
     archive[lp_start + data_view.buf.len / 2] ^= 0xFF;
 
