@@ -2,6 +2,11 @@
 
 Completed history: [docs/PLAN_LOG.md](docs/PLAN_LOG.md). Compression context and interface contract: [docs/plan_context/compression.md](docs/plan_context/compression.md).
 
+## Dependency freshness
+
+- [x] Verify BLIP, zstdz, Nix lock inputs, and GitHub Actions against upstream heads; retain Zig 0.16.0 under the series policy and refresh nixpkgs-unstable (0d06d2a; done 2026-10-08 20:55 EDT).
+- [x] Adopt BLIP containerAt and replace vendored packages with upstream hash-verified contents; full tests, optimized build, Linux Nix checks, and all-system flake evaluation passed (0d06d2a; done 2026-10-08 20:55 EDT).
+
 ## Branch reconciliation
 
 - [x] Add Mechatron targets and README badge after e76a6c9 exposed the missing manifest; the existing Linux package and both test profiles passed direct Nix builds (done 2026-09-27 16:19 EDT).
@@ -18,4 +23,4 @@ Completed history: [docs/PLAN_LOG.md](docs/PLAN_LOG.md). Compression context and
 
 ## Backlog (optional)
 
-- [ ] Bump blip dep v3.1.0 → v3.2.0: free `DictReader.findKey` O(n log n) speedup (was O(n²)), opt-in `DictIndex`; no wire change, backward compatible (per BLIP's 2026-06-02 inbox note). Low priority — our metadata dicts are small.
+- [x] Update BLIP from v3.1.0 to upstream HEAD 5128c62, including faster DictReader.findKey and optional DictIndex (0d06d2a; done 2026-10-08 20:55 EDT).
