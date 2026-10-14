@@ -14,3 +14,11 @@ Completed PLAN.md items retired by plan-retire, oldest retirement first.
 - [x] [Continuity: previously completed] Phase 3 split (BLIP umbrella → focused mini_blar repo): repo created, BLIP dep wired, non-mini_blar sources removed, build.zig/test/build trimmed, docs rewritten, pushed + tagged v3.0.0, Garnix green (2026-05-04 → 2026-05-05 EST; full details in jj log)
 - [x] [Continuity: previously completed] Zig deps vendored in-tree under `zig-pkg/` (blip; now also zstdz)
 - [x] [Continuity: previously completed] GitHub Actions bumped for Node 24; Zig 0.16 pinned via zig-overlay
+
+## Retired 2026-10-14
+
+- [x] [Branch reconciliation] Add Mechatron targets and README badge after e76a6c9 exposed the missing manifest; the existing Linux package and both test profiles passed direct Nix builds (done 2026-09-27 16:19 EDT).
+- [x] [Branch reconciliation] Restore checkout to yolo and commit staged documentation links; fetched origin/yolo matched ca14739, latest jj snapshots were identical, and the xattr branch was already merged; nix develop -c ./test and ./build passed (afc35b6; done 2026-09-27 16:15 EDT).
+- [x] [Optional zstd compression] Notify the downstream launcher consumer of the shipped compression profile (2026-07-06 ~3:10 PM EST).
+- [x] [Per-entry MT zstd] Enable zstd nbWorkers on the per-entry path: entries ≥8 MB take the MT path with min(num_threads, 8) workers + pinned 8 MB jobSize; <8 MB always single-thread. Path selected by SIZE only → bytes independent of num_threads (invariant test held before AND after; zstd 1.6.0 emits identical ST/MT-path bytes for these parameters, so archives are byte-identical to the previous revision). Probe: 36 MB level-19 15.0s → 3.65s (4.11×). serializeFileEntry gained a num_threads parameter (2026-07-07 ~1:55 PM EST).
+- [x] [Per-entry MT zstd] Push 50bc69f75540, pass the then-active CI checks 5/5, and notify the downstream launcher consumer; its later remeasurement reported 12.1s → 5.98s for 34 MB + 14 MB binaries at level 19 (notification 2026-07-07 ~2:15 PM EST; remeasurement 2026-07-07).

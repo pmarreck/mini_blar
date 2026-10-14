@@ -4,6 +4,7 @@ annotate=[
 	.mechatron-prime/targets = Exact-commit CI package and test targets for Thelio
 	docs/PLAN_LOG.md = Completed work retired from PLAN.md
 	docs/plan_context/compression.md = Compression request and stable consumer interface contract
+	docs/plan_context/validation-contract.md = Library verification ABI and downstream finding-contract boundaries
 	src/compression_stub.zig = No-op compression stub (default profile) — signature twin of compression_zstd.zig, zero codecs linked
 	src/compression_zstd.zig = zstd-only compression module (-Denable_compression=true): BLIP-container-aware compress/decompress, CSUM=xxhash64, comptime level
 	zig-pkg = Immutable upstream BLIP and zstdz packages for offline Zig builds
