@@ -12,12 +12,14 @@ set -u
 # --------------- paths ---------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-MINIBLAR="$PROJECT_DIR/zig-out/bin/miniblar"
+MINIBLAR="${MINIBLAR_BIN:-$PROJECT_DIR/zig-out/bin/miniblar}"
 
 # --------------- build ---------------
-echo "Building miniblar..."
-(cd "$PROJECT_DIR" && nix develop -c zig build -Doptimize=ReleaseFast) \
-  || { echo "FATAL: build failed"; exit 1; }
+if [[ -z "${MINIBLAR_BIN:-}" ]]; then
+  echo "Building miniblar..."
+  (cd "$PROJECT_DIR" && nix develop -c zig build -Doptimize=ReleaseFast) \
+    || { echo "FATAL: build failed"; exit 1; }
+fi
 
 if [[ ! -x "$MINIBLAR" ]]; then
   echo "FATAL: miniblar binary not found at $MINIBLAR"
