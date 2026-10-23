@@ -794,8 +794,8 @@ pub fn createFullArchive(
                 try parallel_to_free.append(allocator, item);
             }
             // Free the ArrayList container (not its items, they're now in to_free)
-            r.to_free_items.items = &.{};
             r.to_free_items.deinit(thread_alloc);
+            r.to_free_items = .empty;
         }
     } else {
         // Sequential path (existing behavior)
@@ -892,6 +892,23 @@ pub fn createFullArchive(
     const result = try array_mod.serializeArrayWithOptions(allocator, &outer_elements, .{ .csum_id = .blake3_128 });
 
     return result;
+}
+
+test "parallel compressed archive releases worker list storage safely" {
+    if (comptime !build_options.enable_compression) return;
+    const entries = [_]ArchiveEntry{
+        .{ .file = .{ .path = "first", .content = "first payload" } },
+        .{ .file = .{ .path = "second", .content = "second payload" } },
+    };
+    const archive = try createFullArchive(testing.allocator, &entries, null, null, null, .zstd, 2);
+    defer testing.allocator.free(archive);
+    const reader = try ArchiveReader.init(archive);
+    for (entries, 0..) |entry, index| {
+        try testing.expect(try reader.verifyFileAt(index));
+        const content = try reader.fileContentDecompress(index, testing.allocator);
+        defer testing.allocator.free(content);
+        try testing.expectEqualStrings(entry.file.content, content);
+    }
 }
 
 /// Reader for a BLIP archive. Handles both ARRAY-based FILE and DICT-based DIR entries.

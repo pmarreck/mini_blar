@@ -1,4 +1,6 @@
-# Native Thelio package and both archive profiles.
+# Native Linux package, archive profiles, and CLI checks.
 packages.x86_64-linux.default
 checks.x86_64-linux.default
 checks.x86_64-linux.test-compression
+checks.x86_64-linux.test-compression-safe
+checks.x86_64-linux.test-cli

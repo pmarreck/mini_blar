@@ -4,6 +4,8 @@ Completed history: [docs/PLAN_LOG.md](docs/PLAN_LOG.md). Compression context and
 
 ## Inbox reconciliation
 
+- [x] Fix parallel compressed-archive worker cleanup; pass default/compression units, the new safety-profile gate, 25 packaged CLI checks, and the optimized Nix build. (done 2026-10-23 16:40 EDT)
+
 - [x] Reconcile two inbox notes, retire five completions, and document the existing validation ABI; documentation checks passed and executable inputs remain identical to CI-passing 6414cfc (context: docs/plan_context/validation-contract.md; done 2026-10-14 14:38 EDT).
 
 ## Dependency freshness

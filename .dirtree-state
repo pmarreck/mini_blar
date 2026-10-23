@@ -7,5 +7,6 @@ annotate=[
 	docs/plan_context/validation-contract.md = Library verification ABI and downstream finding-contract boundaries
 	src/compression_stub.zig = No-op compression stub (default profile) — signature twin of compression_zstd.zig, zero codecs linked
 	src/compression_zstd.zig = zstd-only compression module (-Denable_compression=true): BLIP-container-aware compress/decompress, CSUM=xxhash64, comptime level
+	src/mini_blar.zig = Archive encoding, decoding, and safe parallel compression
 	zig-pkg = Immutable upstream BLIP and zstdz packages for offline Zig builds
 ]

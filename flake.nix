@@ -52,10 +52,12 @@
         packages.default = pkgs.stdenv.mkDerivation {
           inherit pname version;
           src = self;
-          nativeBuildInputs = commonInputs;
+          nativeBuildInputs = commonInputs
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.autoPatchelfHook ];
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.stdenv.cc.cc.lib ];
           dontConfigure = true;
           dontInstall = true;
-          dontFixup = true;
+          dontFixup = !pkgs.stdenv.isLinux;
           buildPhase = zigBuildPhase "ReleaseFast";
         };
 
@@ -88,6 +90,18 @@
         # Nix sandbox (its /lib64 ELF interpreter doesn't exist there —
         # FileNotFound). Musl makes it fully static; no patchelf dance needed
         # (cf. zstdz@2110c2c which solved the same problem the other way).
+        checks.test-cli = pkgs.runCommand "mini_blar-cli-tests" {
+          nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.gnugrep pkgs.diffutils pkgs.perl ];
+        } ''
+          export MINIBLAR_BIN=${self.packages.${system}.default}/bin/miniblar
+          bash ${self}/tests/miniblar_test.sh
+          mkdir "$out"
+        '';
+        checks.test-compression-safe = self.checks.${system}.test-compression.overrideAttrs (old: {
+          pname = "mini_blar-tests-compression-safe";
+          buildPhase = builtins.replaceStrings [ "zig build test " ]
+            [ "zig build test -Doptimize=ReleaseSafe " ] old.buildPhase;
+        });
         checks.test-compression = let
           muslFlag = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux
             "-Dtarget=${pkgs.stdenv.hostPlatform.parsed.cpu.name}-linux-musl";
